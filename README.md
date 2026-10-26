@@ -18,13 +18,13 @@ git diff main -- src/
 The reference documentation below describes the completed task and includes
 optional upstream workflows outside the course.
 
-# SO-101 vial placement
+# SO-101 object placement
 
 <p align="center"><img src="media/demo.gif" alt="SO-101 workshop demonstration" width="100%"></p>
 
-An Isaac Lab tutorial that trains an SO-101 arm to pick up a vial lying on the desk and place it upright in
-**any of the four holes** of a rack. A state policy learns the task with PPO. A wrist-camera policy is then
-distilled from it, and that camera policy is the one that runs on the real robot.
+The repository contains the original vial/rack task and a cube/cup successor.
+The cube task trains an SO-101 arm to pick up a 2 cm cube and place it fully
+inside an upright open-top cup. A tipped cup is not a successful placement.
 Training uses **Newton MJWarp physics** and the **Newton renderer** for the camera.
 
 ## Setup
@@ -67,6 +67,8 @@ combined as `uv run --extra video --extra wandb` when recording and tracking a r
 | --- | --- | --- |
 | `IsaacTutorial-Place-Vial-SO101` | Full state | PPO |
 | `IsaacTutorial-Place-Vial-SO101-Camera` | Wrist RGB (2 frames, 64×48) + proprioception | Distillation from a state teacher, or PPO from scratch |
+| `IsaacTutorial-Place-Cube-SO101` | Full state | PPO |
+| `IsaacTutorial-Place-Cube-SO101-Camera` | Wrist RGB (2 frames, 64×48) + proprioception | Distillation from a state teacher, or PPO from scratch |
 
 Add `presets=sim2real` to either task to enable robot-transfer randomization. The physical randomization is
 identical in both tasks, so a teacher and its student train under the same physics. See

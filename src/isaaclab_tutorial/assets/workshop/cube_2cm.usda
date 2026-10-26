@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    defaultPrim = "Cube"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Cube" (
+    apiSchemas = ["PhysicsRigidBodyAPI"]
+) {
+    def Cube "Visual" {
+        float3 xformOp:scale = (0.02, 0.02, 0.02)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+        color3f[] primvars:displayColor = [(0.15, 0.55, 0.95)]
+    }
+    def Cube "Collision" (
+        apiSchemas = ["PhysicsCollisionAPI"]
+    ) {
+        float3 xformOp:scale = (0.02, 0.02, 0.02)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+        bool physics:collisionEnabled = true
+    }
+}

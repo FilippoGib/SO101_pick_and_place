@@ -1,0 +1,1 @@
+"""Cube-placement task family."""
