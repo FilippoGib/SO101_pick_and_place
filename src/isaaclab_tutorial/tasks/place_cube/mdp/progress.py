@@ -11,14 +11,13 @@ class PlacementProgress:
         self.lifted = torch.zeros_like(self.grasped)
         self.inside = torch.zeros_like(self.grasped)
         self.success = torch.zeros_like(self.grasped)
-        self.tipped_cup = torch.zeros_like(self.grasped)
         self.grasp_count = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.stable_count = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.time_to_success = torch.full((num_envs,), -1, dtype=torch.long, device=device)
 
     def reset(self, env_ids=None):
         ids = slice(None) if env_ids is None else env_ids
-        for value in (self.grasped, self.lifted, self.inside, self.success, self.tipped_cup):
+        for value in (self.grasped, self.lifted, self.inside, self.success):
             value[ids] = False
         self.grasp_count[ids] = 0
         self.stable_count[ids] = 0
@@ -29,7 +28,6 @@ class PlacementProgress:
         self.grasped |= self.grasp_count >= self.grasp_steps
         self.lifted |= lifted
         self.inside |= inside
-        self.tipped_cup |= ~upright
         self.stable_count.copy_(torch.where(seated, self.stable_count + 1, torch.zeros_like(self.stable_count)))
         newly_successful = ~self.success & (self.stable_count >= self.stable_steps)
         self.time_to_success.copy_(torch.where(newly_successful, step, self.time_to_success))

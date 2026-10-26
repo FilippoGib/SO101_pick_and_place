@@ -1,4 +1,4 @@
-"""Cube/cup task observations and deployable wrist-camera observations."""
+"""Cube/cylinder task observations and deployable wrist-camera observations."""
 
 from collections.abc import Sequence
 
@@ -8,7 +8,7 @@ from isaaclab.managers import ManagerTermBase, ObservationTermCfg, SceneEntityCf
 from isaaclab.utils.images import CameraFrameStack
 
 from .progress import placement_progress
-from .task import cube_in_cup, cube_upright, jaw_contacts
+from .task import cube_bottom_and_center_offset, jaw_contacts
 
 
 def joint_target(env, asset_cfg):
@@ -25,15 +25,22 @@ def encoder_joint_target(env, asset_cfg):
     return joint_target(env, asset_cfg) + getattr(env, "_so101_encoder_bias", 0.0)
 
 
-def cube_in_cup_frame(env):
-    return cube_in_cup(env)[0]
+def cube_on_cylinder_frame(env):
+    cube, cylinder = env.scene["cube"], env.scene["cylinder"]
+    bottom, offset = cube_bottom_and_center_offset(
+        cube.data.root_pos_w.torch, cube.data.root_quat_w.torch, cylinder.data.root_pos_w.torch
+    )
+    return torch.cat((offset, bottom[:, None]), dim=-1)
 
 
 def placement_features(env):
-    position, _, lowest = cube_in_cup(env)
+    cube, cylinder = env.scene["cube"], env.scene["cylinder"]
+    bottom, offset = cube_bottom_and_center_offset(
+        cube.data.root_pos_w.torch, cube.data.root_quat_w.torch, cylinder.data.root_pos_w.torch
+    )
     cube = env.scene["cube"]
     speed = torch.linalg.vector_norm(cube.data.root_lin_vel_w.torch, dim=-1)
-    return torch.stack((position[:, 0], position[:, 1], lowest, cube_upright(env), speed), dim=-1)
+    return torch.stack((offset[:, 0], offset[:, 1], bottom, speed), dim=-1)
 
 
 def progress_flags(env):

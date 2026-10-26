@@ -16,7 +16,7 @@ __all__ = [
     "randomize_wrist_camera_mount",
     "success",
     "cube_dropped",
-    "cube_in_cup_frame",
+    "cube_on_cylinder_frame",
     "wrist_rgb",
     "abnormal_robot_state",
     "body_state_b",
@@ -34,7 +34,7 @@ from .events import (
     randomize_wrist_camera_mount,
 )
 from .observations import (
-    cube_in_cup_frame,
+    cube_on_cylinder_frame,
     encoder_joint_pos,
     encoder_joint_target,
     jaw_contact_flags,
@@ -53,5 +53,5 @@ from .rewards import (
     milestones,
     success,
 )
-from .task import cube_contained, cube_in_cup
-from .terminations import cube_dropped, cup_tipped, placement_success
+from .task import cube_on_cylinder, cube_supported
+from .terminations import cube_dropped, placement_success

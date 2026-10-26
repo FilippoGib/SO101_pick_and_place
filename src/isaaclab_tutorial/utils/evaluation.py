@@ -32,6 +32,15 @@ EXACT_EVALUATION_ACTIVE = False
 """Set before the task is constructed so :meth:`play_mode` keeps one environment per audited episode."""
 
 
+def _is_cube_task(env) -> bool:
+    """Identify the task from its configured termination terms."""
+    try:
+        env.termination_manager.get_term("cube_dropped")
+    except KeyError:
+        return False
+    return True
+
+
 def install_episode_counter() -> list[str]:
     """Stop play after :data:`EVALUATION_EPISODES` deterministic canonical episodes and print the result."""
     return _install_episode_counter(EVALUATION_EPISODES)
@@ -66,8 +75,6 @@ def _install_episode_counter(target: int) -> list[str]:
             "cube_lost",
             "timed_out",
             "unsafe_rack_contact",
-            "unsafe_cup_contact",
-            "tipped_cup",
         ),
         0,
     )
@@ -89,10 +96,11 @@ def _install_episode_counter(target: int) -> list[str]:
             code = getattr(forward, "__code__", None)
             step_code = getattr(getattr(self.unwrapped, "step", None), "__code__", None)
             cfg = getattr(self.unwrapped, "cfg", None)
+            cube_task = _is_cube_task(self.unwrapped)
             runtime = {
                 "success_criterion": (
-                    "cube_fully_inside_upright_cup_v1"
-                    if "cube" in getattr(self.unwrapped, "scene", {})
+                    "cube_stable_on_cylinder_v1"
+                    if cube_task
                     else "any_rack_hole_v1"
                 ),
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -146,12 +154,12 @@ def _install_episode_counter(target: int) -> list[str]:
             }
         if self.num_envs != target:
             raise RuntimeError(f"The exact audit runs one episode per environment: use --num_envs {target}.")
-        cube_task = "cube" in getattr(self.unwrapped, "scene", {})
+        cube_task = _is_cube_task(self.unwrapped)
         if initial_rows is None and hasattr(self.unwrapped, "_so101_reset_row"):
             initial_rows = self.unwrapped._so101_reset_row.cpu().tolist()
             for key, attribute in (
                 ("object_pose", "_so101_reset_cube_pose" if cube_task else "_so101_reset_vial_pose"),
-                ("container_pose", "_so101_reset_cup_pose" if cube_task else "_so101_reset_rack_pose"),
+                ("container_pose", "_so101_reset_cylinder_pose" if cube_task else "_so101_reset_rack_pose"),
                 ("support_height_m", "_so101_support_height"),
                 ("encoder_bias_rad", "_so101_encoder_bias"),
             ):
@@ -188,7 +196,7 @@ def _install_episode_counter(target: int) -> list[str]:
             for hole in terminal_hole[done_ids][success].tolist():
                 successes_by_hole[hole] += 1
         progress = env._so101_terminal_progress[done_ids]
-        peak_force_attribute = "_so101_terminal_max_cup_force" if cube_task else "_so101_terminal_max_rack_force"
+        peak_force_attribute = "_so101_terminal_max_cylinder_force" if cube_task else "_so101_terminal_max_rack_force"
         peak_force = getattr(env, peak_force_attribute)[done_ids]
         support_force = getattr(env, "_so101_terminal_max_support_force", None)
         support_time = getattr(env, "_so101_terminal_support_contact_time", None)
@@ -203,12 +211,10 @@ def _install_episode_counter(target: int) -> list[str]:
         counts["inserted"] += int(progress[:, 2].sum())
         if cube_task:
             counts["inside"] += int(progress[:, 2].sum())
-            counts["tipped_cup"] += int(progress[:, 3].sum())
             cube_lost = env.termination_manager.get_term("cube_dropped") | env.termination_manager.get_term(
                 "cube_out_of_bounds"
             )
             counts["cube_lost"] += int(cube_lost[done_ids].sum())
-            counts["unsafe_cup_contact"] += int(progress[:, 3].sum())
         else:
             counts["unsafe_rack_contact"] += int(progress[:, 3].sum())
             vial_lost = env.termination_manager.get_term("vial_dropped") | env.termination_manager.get_term(
@@ -232,8 +238,10 @@ def _install_episode_counter(target: int) -> list[str]:
                         **({"hole_index": int(terminal_hole[env_id])} if terminal_hole is not None else {}),
                         "grasped": bool(progress[index, 0]),
                         "lifted": bool(progress[index, 1]),
-                        ("inside_cup" if cube_task else "inserted"): bool(progress[index, 2]),
-                        ("peak_cup_contact_force_n" if cube_task else "peak_rack_force_n"): float(peak_force[index]),
+                        ("on_cylinder" if cube_task else "inserted"): bool(progress[index, 2]),
+                        (
+                            "peak_cylinder_contact_force_n" if cube_task else "peak_rack_force_n"
+                        ): float(peak_force[index]),
                         **(
                             {
                                 "peak_jaw_support_force_n": float(support_force[env_id]),
@@ -264,12 +272,10 @@ def _install_episode_counter(target: int) -> list[str]:
             }
             if cube_task:
                 summary.update(
-                    inside_cup_rate=counts["inside"] / episodes,
+                    on_cylinder_rate=counts["inside"] / episodes,
                     cube_lost_rate=counts["cube_lost"] / episodes,
-                    tipped_cup_rate=counts["tipped_cup"] / episodes,
-                    unsafe_cup_contact_rate=counts["unsafe_cup_contact"] / episodes,
-                    mean_peak_cup_contact_force_n=sums["peak_rack_force"] / episodes,
-                    max_cup_contact_force_n=max_rack_force,
+                    mean_peak_cylinder_contact_force_n=sums["peak_rack_force"] / episodes,
+                    max_cylinder_contact_force_n=max_rack_force,
                 )
                 summary.pop("insertion_rate", None)
                 summary.pop("vial_lost_rate", None)

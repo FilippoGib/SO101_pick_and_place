@@ -12,6 +12,16 @@ from isaaclab_tutorial.utils import evaluation
 from isaaclab_tutorial.utils.evaluation import _install_episode_counter
 
 
+def test_task_detection_uses_termination_terms():
+    vial_env = SimpleNamespace(termination_manager=_TerminationManager({"vial_dropped": torch.zeros(1)}))
+    cube_env = SimpleNamespace(
+        termination_manager=_TerminationManager({"cube_dropped": torch.zeros(1)})
+    )
+
+    assert evaluation._is_cube_task(vial_env) is False
+    assert evaluation._is_cube_task(cube_env) is True
+
+
 class _TerminationManager:
     def __init__(self, terms):
         self.terms = terms

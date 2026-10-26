@@ -7,7 +7,7 @@ import torch
 from isaaclab.managers import ManagerTermBase, RewardTermCfg
 
 from .progress import placement_progress
-from .task import cube_grasp_point_w, cup_placement_error, grasp_center_w
+from .task import cube_grasp_point_w, cube_on_cylinder, grasp_center_w
 
 
 def _finite_reward(value: torch.Tensor) -> torch.Tensor:
@@ -53,7 +53,7 @@ class approach_progress(ManagerTermBase):
 
 def held_goal(env, std: float = 0.03):
     progress = placement_progress(env)
-    error = cup_placement_error(env)
+    error = cube_on_cylinder(env)
     shaping = torch.exp((-error / std).clamp(min=-80.0, max=0.0))
     return torch.where(progress.grasped & ~progress.inside & torch.isfinite(error), shaping, 0.0)
 

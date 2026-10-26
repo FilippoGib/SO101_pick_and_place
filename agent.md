@@ -1,4 +1,4 @@
-# Cube-in-Cup Task Migration Plan
+# Cube-on-Cylinder Task Migration Plan
 
 ## Status
 

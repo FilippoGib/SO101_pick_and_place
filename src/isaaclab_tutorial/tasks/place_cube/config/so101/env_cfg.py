@@ -44,7 +44,7 @@ from isaaclab_tasks.utils import PresetCfg, preset
 
 from isaaclab_assets.robots import so101
 
-from isaaclab_tutorial.assets import CUBE_RESET_DATASET, CUBE_USD, CUP_USD, DESK_USD
+from isaaclab_tutorial.assets import CUBE_RESET_DATASET, CUBE_USD, CYLINDER_USD, DESK_USD
 from isaaclab_tutorial.tasks.place_cube import mdp
 from isaaclab_tutorial.tasks.place_cube.reset.curriculum import ALL_PHASES, CANONICAL_START
 
@@ -447,7 +447,7 @@ def _jaw_support_sensor(link: str) -> ContactSensorCfg:
 
 @configclass
 class SO101SceneCfg(InteractiveSceneCfg):
-    """One SO-101, one cube, one cup, and a desk; sim2real adds the gray mat and jaw/support contact sensing."""
+    """One SO-101, one cube, one cylinder, and a desk."""
 
     # BEGIN lesson-02-robot
     robot = SO101_CFG.replace(  # used to create a custom configuration
@@ -463,7 +463,7 @@ class SO101SceneCfg(InteractiveSceneCfg):
     # END lesson-02-robot
 
     # BEGIN lesson-03-objects
-    # Add the cube, cup, desk, and contact sensors in lesson 03.
+    # Add the cube, cylinder, desk, and contact sensors in lesson 03.
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
         spawn=CubeSpawnCfg(
@@ -482,11 +482,13 @@ class SO101SceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    cup = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Cup",
-        spawn=sim_utils.UsdFileCfg(usd_path=str(CUP_USD), func=_spawn_usd_with_contact_material),
-        # The cup mesh is authored from its base at local z=0, so place that
-        # base on the 35 mm tabletop rather than centering the cup on it.
+    cylinder = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Cylinder",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=str(CYLINDER_USD),
+            func=_spawn_usd_with_contact_material,
+            rigid_props=sim_utils.UsdPhysicsRigidBodyCfg(kinematic_enabled=True),
+        ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.18, 0.08, TABLETOP_Z)),
     )
 
@@ -519,9 +521,9 @@ class SO101SceneCfg(InteractiveSceneCfg):
         filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube"],
         history_length=4,
     )
-    cube_cup_contact = ContactSensorCfg(
+    cube_cylinder_contact = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
-        filter_prim_paths_expr=["{ENV_REGEX_NS}/Cup"],
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/Cylinder"],
         history_length=4,
     )
     fixed_jaw_support = preset(default=None, sim2real=_jaw_support_sensor("gripper"))
@@ -593,7 +595,7 @@ class PolicyStateGroupCfg(ObsGroup):
         func=mdp.body_state_b,
         params={"body_asset_cfg": SceneEntityCfg("cube"), "base_asset_cfg": SceneEntityCfg("robot")},
     )
-    cube_in_cup = ObsTerm(func=mdp.cube_in_cup_frame)
+    cube_on_cylinder = ObsTerm(func=mdp.cube_on_cylinder_frame)
     placement = ObsTerm(func=mdp.placement_features)
     # Latched milestones make the once-per-episode milestone rewards Markov.
     progress = ObsTerm(func=mdp.progress_flags)
@@ -684,7 +686,7 @@ class Sim2RealEventsCfg(EventsCfg):
 
     cube_material = _material_event(SceneEntityCfg("cube"), (0.2, 1.3))
     jaw_material = _material_event(SceneEntityCfg("robot", body_names=["gripper", "moving_jaw_so101_v1"]), (0.2, 1.3))
-    cup_material = _material_event(SceneEntityCfg("cup"), (0.2, 1.0))
+    cylinder_material = _material_event(SceneEntityCfg("cylinder"), (0.2, 1.0))
     support_material = _material_event(SceneEntityCfg("support"), (0.3, 1.3))
     gripper_gains = EventTerm(
         func=mdp.randomize_actuator_gains,
@@ -733,9 +735,9 @@ class Sim2RealEventsCfg(EventsCfg):
             phase_weights=CANONICAL_START,
             home_position_noise=0.02,
             home_heading_noise=math.radians(15),
-            home_cup_position_noise=0.005,
-            home_cup_yaw_noise=math.radians(5),
-            home_cup_clearance=0.001,
+            home_cylinder_position_noise=0.005,
+            home_cylinder_yaw_noise=math.radians(5),
+            home_cylinder_clearance=0.001,
             support_height_range=(0.0, 0.004),
         )
 
@@ -770,7 +772,6 @@ class RewardsCfg:
 class TerminationsCfg:
     success = DoneTerm(func=mdp.placement_success)
     cube_dropped = DoneTerm(func=mdp.cube_dropped)
-    cup_tipped = DoneTerm(func=mdp.cup_tipped)
     # The robot base frame is yawed +90 degrees, so these bounds are 0.5 m to its sides and 0.62 m ahead/behind.
     cube_out_of_bounds = DoneTerm(
         func=mdp.out_of_bound,
@@ -792,7 +793,6 @@ class PhysicsCfg(PresetCfg):
         solver_cfg=MJWarpSolverCfg(
             solver="newton",
             integrator="implicitfast",
-            # The hollow cup mesh generates more contact constraints than the vial mesh at 4096 environments.
             njmax=512,
             nconmax=512,
             cone="pyramidal",
