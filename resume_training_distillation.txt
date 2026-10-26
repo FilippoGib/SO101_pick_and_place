@@ -1,0 +1,2 @@
+uv run isaaclab train     --rl_library rsl_rl     --task IsaacTutorial-Place-Vial-SO101-Camera     --num_envs 1024     --max_iterations 1600     --run_name distillation     --resume     --checkpoint <student weights path>     presets=newton_mjwarp,newton_renderer
+
