@@ -28,6 +28,11 @@ class placement_success(ManagerTermBase):
         ids = slice(None) if env_ids is None else env_ids
         self.progress.reset(ids)
         self.max_cup_force[ids] = 0.0
+        if hasattr(self._env, "_so101_reset_grasped"):
+            grasped = self._env._so101_reset_grasped[ids]
+            self.progress.grasped[ids] = grasped
+            self.progress.grasp_count[ids] = torch.where(grasped, self.progress.grasp_steps, 0)
+            self.progress.lifted[ids] = self._env._so101_reset_lifted[ids]
 
     def __call__(self, env):
         fixed, moving = jaw_contacts(env)
@@ -66,11 +71,10 @@ class placement_success(ManagerTermBase):
         return success
 
 
-def cube_dropped(env, height_above_robot: float = 0.004):
-    robot_height = env.scene["robot"].data.root_link_pos_w.torch[:, 2]
-    return placement_progress(env).lifted & (
-        env.scene["cube"].data.root_pos_w.torch[:, 2] - robot_height < height_above_robot
-    )
+def cube_dropped(env, drop_clearance: float = 0.01):
+    """Terminate a lifted episode when the cube returns to the tabletop."""
+    returned_to_table = cube_height(env) < CUBE_REST_HEIGHT + drop_clearance
+    return placement_progress(env).lifted & ~cube_contained(env) & returned_to_table
 
 
 def cup_tipped(env):

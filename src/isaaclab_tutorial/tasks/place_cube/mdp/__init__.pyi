@@ -43,6 +43,15 @@ from .observations import (
     progress_flags,
     wrist_rgb,
 )
-from .rewards import approach_progress, held_goal, jaw_support_force, milestones, success
+from .rewards import (
+    action_rate_l2,
+    approach_progress,
+    held_goal,
+    jaw_support_force,
+    joint_position_limits,
+    joint_velocity_l2,
+    milestones,
+    success,
+)
 from .task import cube_contained, cube_in_cup
 from .terminations import cube_dropped, cup_tipped, placement_success

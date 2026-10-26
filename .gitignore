@@ -102,3 +102,4 @@ benchmark_*.json
 *.onnx.data
 *.jit
 !src/isaaclab_tutorial/assets/reset_poses.pt
+!src/isaaclab_tutorial/assets/cube_reset_poses.pt

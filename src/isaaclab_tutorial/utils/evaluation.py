@@ -55,7 +55,21 @@ def _install_episode_counter(target: int) -> list[str]:
             with checkpoint.open("rb") as stream:
                 checkpoint_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     counts = dict.fromkeys(
-        ("episodes", "successes", "grasped", "lifted", "inserted", "vial_lost", "timed_out", "unsafe_rack_contact"), 0
+        (
+            "episodes",
+            "successes",
+            "grasped",
+            "lifted",
+            "inserted",
+            "inside",
+            "vial_lost",
+            "cube_lost",
+            "timed_out",
+            "unsafe_rack_contact",
+            "unsafe_cup_contact",
+            "tipped_cup",
+        ),
+        0,
     )
     sums = {"peak_rack_force": 0.0, "time_to_success": 0.0}
     max_rack_force = 0.0
@@ -76,7 +90,11 @@ def _install_episode_counter(target: int) -> list[str]:
             step_code = getattr(getattr(self.unwrapped, "step", None), "__code__", None)
             cfg = getattr(self.unwrapped, "cfg", None)
             runtime = {
-                "success_criterion": "any_rack_hole_v1",
+                "success_criterion": (
+                    "cube_fully_inside_upright_cup_v1"
+                    if "cube" in getattr(self.unwrapped, "scene", {})
+                    else "any_rack_hole_v1"
+                ),
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                 "first_step_utc": datetime.now(UTC).isoformat(),
                 "physics_forward": getattr(forward, "__qualname__", None),
@@ -128,10 +146,12 @@ def _install_episode_counter(target: int) -> list[str]:
             }
         if self.num_envs != target:
             raise RuntimeError(f"The exact audit runs one episode per environment: use --num_envs {target}.")
+        cube_task = "cube" in getattr(self.unwrapped, "scene", {})
         if initial_rows is None and hasattr(self.unwrapped, "_so101_reset_row"):
             initial_rows = self.unwrapped._so101_reset_row.cpu().tolist()
             for key, attribute in (
-                ("rack_pose", "_so101_reset_rack_pose"),
+                ("object_pose", "_so101_reset_cube_pose" if cube_task else "_so101_reset_vial_pose"),
+                ("container_pose", "_so101_reset_cup_pose" if cube_task else "_so101_reset_rack_pose"),
                 ("support_height_m", "_so101_support_height"),
                 ("encoder_bias_rad", "_so101_encoder_bias"),
             ):
@@ -146,8 +166,10 @@ def _install_episode_counter(target: int) -> list[str]:
                     value = getattr(robot.data, key)
                     value = value.torch if hasattr(value, "torch") else value
                     initial_conditions[key] = value.cpu().tolist()
-        if initial_poses is None and hasattr(self.unwrapped, "_so101_reset_vial_pose"):
-            initial_poses = self.unwrapped._so101_reset_vial_pose.cpu().tolist()
+        if initial_poses is None:
+            object_attribute = "_so101_reset_cube_pose" if cube_task else "_so101_reset_vial_pose"
+            if hasattr(self.unwrapped, object_attribute):
+                initial_poses = getattr(self.unwrapped, object_attribute).cpu().tolist()
         result = original_step(self, actions)
         dones = result[2].bool()
         if counted is None:
@@ -166,7 +188,8 @@ def _install_episode_counter(target: int) -> list[str]:
             for hole in terminal_hole[done_ids][success].tolist():
                 successes_by_hole[hole] += 1
         progress = env._so101_terminal_progress[done_ids]
-        peak_force = env._so101_terminal_max_rack_force[done_ids]
+        peak_force_attribute = "_so101_terminal_max_cup_force" if cube_task else "_so101_terminal_max_rack_force"
+        peak_force = getattr(env, peak_force_attribute)[done_ids]
         support_force = getattr(env, "_so101_terminal_max_support_force", None)
         support_time = getattr(env, "_so101_terminal_support_contact_time", None)
         if support_force is not None:
@@ -178,11 +201,20 @@ def _install_episode_counter(target: int) -> list[str]:
         counts["grasped"] += int(progress[:, 0].sum())
         counts["lifted"] += int(progress[:, 1].sum())
         counts["inserted"] += int(progress[:, 2].sum())
-        counts["unsafe_rack_contact"] += int(progress[:, 3].sum())
-        vial_lost = env.termination_manager.get_term("vial_dropped") | env.termination_manager.get_term(
-            "vial_out_of_bounds"
-        )
-        counts["vial_lost"] += int(vial_lost[done_ids].sum())
+        if cube_task:
+            counts["inside"] += int(progress[:, 2].sum())
+            counts["tipped_cup"] += int(progress[:, 3].sum())
+            cube_lost = env.termination_manager.get_term("cube_dropped") | env.termination_manager.get_term(
+                "cube_out_of_bounds"
+            )
+            counts["cube_lost"] += int(cube_lost[done_ids].sum())
+            counts["unsafe_cup_contact"] += int(progress[:, 3].sum())
+        else:
+            counts["unsafe_rack_contact"] += int(progress[:, 3].sum())
+            vial_lost = env.termination_manager.get_term("vial_dropped") | env.termination_manager.get_term(
+                "vial_out_of_bounds"
+            )
+            counts["vial_lost"] += int(vial_lost[done_ids].sum())
         counts["timed_out"] += int(env.termination_manager.get_term("time_out")[done_ids].sum())
         sums["peak_rack_force"] += float(peak_force.sum())
         sums["time_to_success"] += float(env._so101_terminal_time_to_success_s[done_ids][success].sum())
@@ -193,13 +225,15 @@ def _install_episode_counter(target: int) -> list[str]:
                     {
                         "env_id": env_id,
                         "reset_row": initial_rows[env_id] if initial_rows is not None else None,
-                        "initial_vial_pose": initial_poses[env_id] if initial_poses is not None else None,
+                        "initial_cube_pose" if cube_task else "initial_vial_pose": (
+                            initial_poses[env_id] if initial_poses is not None else None
+                        ),
                         "success": bool(success[index]),
                         **({"hole_index": int(terminal_hole[env_id])} if terminal_hole is not None else {}),
                         "grasped": bool(progress[index, 0]),
                         "lifted": bool(progress[index, 1]),
-                        "inserted": bool(progress[index, 2]),
-                        "peak_rack_force_n": float(peak_force[index]),
+                        ("inside_cup" if cube_task else "inserted"): bool(progress[index, 2]),
+                        ("peak_cup_contact_force_n" if cube_task else "peak_rack_force_n"): float(peak_force[index]),
                         **(
                             {
                                 "peak_jaw_support_force_n": float(support_force[env_id]),
@@ -228,7 +262,21 @@ def _install_episode_counter(target: int) -> list[str]:
                 "max_rack_contact_force_n": max_rack_force,
                 "mean_time_to_success_s": sums["time_to_success"] / successes if successes else None,
             }
-            if terminal_hole is not None:
+            if cube_task:
+                summary.update(
+                    inside_cup_rate=counts["inside"] / episodes,
+                    cube_lost_rate=counts["cube_lost"] / episodes,
+                    tipped_cup_rate=counts["tipped_cup"] / episodes,
+                    unsafe_cup_contact_rate=counts["unsafe_cup_contact"] / episodes,
+                    mean_peak_cup_contact_force_n=sums["peak_rack_force"] / episodes,
+                    max_cup_contact_force_n=max_rack_force,
+                )
+                summary.pop("insertion_rate", None)
+                summary.pop("vial_lost_rate", None)
+                summary.pop("unsafe_rack_contact_rate", None)
+                summary.pop("mean_peak_rack_contact_force_n", None)
+                summary.pop("max_rack_contact_force_n", None)
+            elif terminal_hole is not None:
                 summary["successes_by_hole"] = successes_by_hole
             if support_force is not None:
                 summary.update(

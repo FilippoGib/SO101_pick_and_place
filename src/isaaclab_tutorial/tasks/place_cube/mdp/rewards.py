@@ -10,6 +10,32 @@ from .progress import placement_progress
 from .task import cube_grasp_point_w, cup_placement_error, grasp_center_w
 
 
+def _finite_reward(value: torch.Tensor) -> torch.Tensor:
+    return value.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def action_rate_l2(env):
+    from isaaclab.envs import mdp
+
+    return _finite_reward(mdp.action_rate_l2(env))
+
+
+def joint_velocity_l2(env, asset_cfg=None):
+    from isaaclab.envs import mdp
+
+    if asset_cfg is None:
+        return _finite_reward(mdp.joint_vel_l2(env))
+    return _finite_reward(mdp.joint_vel_l2(env, asset_cfg))
+
+
+def joint_position_limits(env, asset_cfg=None):
+    from isaaclab.envs import mdp
+
+    if asset_cfg is None:
+        return _finite_reward(mdp.joint_pos_limits(env))
+    return _finite_reward(mdp.joint_pos_limits(env, asset_cfg))
+
+
 class approach_progress(ManagerTermBase):
     def __init__(self, cfg: RewardTermCfg, env):
         super().__init__(cfg, env)
@@ -27,7 +53,9 @@ class approach_progress(ManagerTermBase):
 
 def held_goal(env, std: float = 0.03):
     progress = placement_progress(env)
-    return torch.where(progress.grasped & ~progress.inside, torch.exp(-cup_placement_error(env) / std), 0.0)
+    error = cup_placement_error(env)
+    shaping = torch.exp((-error / std).clamp(min=-80.0, max=0.0))
+    return torch.where(progress.grasped & ~progress.inside & torch.isfinite(error), shaping, 0.0)
 
 
 class milestones(ManagerTermBase):
@@ -59,4 +87,4 @@ def jaw_support_force(env, free_force: float = 1.0, force_span: float = 5.0):
     from .task import contact_force
 
     force = torch.maximum(contact_force(env, "fixed_jaw_support"), contact_force(env, "moving_jaw_support"))
-    return ((force - free_force) / force_span).clamp(0.0, 1.0)
+    return _finite_reward(((force - free_force) / force_span).clamp(0.0, 1.0))

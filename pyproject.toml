@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "isaaclab_tutorial"
 version = "0.1.0"
-description = "Isaac Lab tutorial for placing a vial with an SO-101 arm."
+description = "Isaac Lab tutorial for SO-101 vial and cube placement tasks."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -26,6 +26,8 @@ isaaclab_tutorial = "isaaclab_tutorial.tasks"
 [project.scripts]
 generate-so101-resets = "isaaclab_tutorial.tasks.place_vial.reset.generator:generate_main"
 view-so101-resets = "isaaclab_tutorial.tasks.place_vial.reset.generator:view_main"
+generate-so101-cube-resets = "isaaclab_tutorial.tasks.place_cube.reset.generator:generate_main"
+view-so101-cube-resets = "isaaclab_tutorial.tasks.place_cube.reset.generator:view_main"
 
 [project.optional-dependencies]
 leapp = ["leapp==0.7.2"]

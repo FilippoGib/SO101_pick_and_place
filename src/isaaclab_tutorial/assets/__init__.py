@@ -8,6 +8,7 @@ VIAL_LABELED_USD = ASSET_ROOT / "workshop" / "vial_labeled.usda"
 RACK_USD = ASSET_ROOT / "workshop" / "rack.usda"
 DESK_USD = ASSET_ROOT / "workshop" / "desk.usda"
 RESET_DATASET = ASSET_ROOT / "reset_poses.pt"
+CUBE_RESET_DATASET = ASSET_ROOT / "cube_reset_poses.pt"
 CUBE_USD = ASSET_ROOT / "workshop" / "cube_2cm.usda"
 CUP_USD = ASSET_ROOT / "workshop" / "cup.usda"
 
@@ -16,6 +17,15 @@ def validate_assets() -> list[str]:
     """Return missing local asset dependencies without requiring a USD runtime."""
     return [
         str(path)
-        for path in (VIAL_USD, VIAL_LABELED_USD, RACK_USD, DESK_USD, RESET_DATASET, CUBE_USD, CUP_USD)
+        for path in (
+            VIAL_USD,
+            VIAL_LABELED_USD,
+            RACK_USD,
+            DESK_USD,
+            RESET_DATASET,
+            CUBE_RESET_DATASET,
+            CUBE_USD,
+            CUP_USD,
+        )
         if not path.is_file()
     ]

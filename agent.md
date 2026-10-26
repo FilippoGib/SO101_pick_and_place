@@ -2,10 +2,12 @@
 
 ## Status
 
-Implementation completed for the initial cube/cup vertical slice. The legacy
-vial task remains unchanged. The reset generator/dataset and evaluator still
-need a dedicated cube/cup follow-up before large-scale training or sim-to-real
-deployment.
+Cube/cup task implementation is wired end-to-end for dataset-backed training
+and task-aware evaluation. Reset generation now uses phase-specific SO-101
+waypoints and validates every generated row in the actual Newton cube scene
+before saving the artifact. The legacy vial task remains unchanged.
+Large-scale training and sim-to-real tuning still require empirical policy
+validation.
 
 ## Confirmed goal
 
@@ -28,9 +30,9 @@ the existing vial task:
    has passed its tests and smoke run.
 3. Extract or reuse only robot/control/camera utilities that are genuinely
    object-independent. Avoid a broad speculative refactor.
-4. The new task currently uses default scene resets; its copied reset modules
-   are not wired to the environment. A dedicated physics-validated cube/cup
-   reset artifact is still required before curriculum training.
+4. Added a dedicated cube/cup reset schema, generated artifact, reset CLI, and
+   reset event wiring.
+5. Evaluation now selects vial or cube/cup metrics from the scene entities.
 
 If the intended product is instead to remove the vial task entirely, the same
 cube/cup implementation can later replace the old registration and docs in a

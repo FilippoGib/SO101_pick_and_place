@@ -6,7 +6,9 @@ from isaaclab.utils.math import quat_apply
 
 from .geometry import cup_local_position, cup_upright, inside_cup_error
 
-CUBE_REST_HEIGHT = 0.01
+# The cube rests with its center at the tabletop pose used by the scene and
+# reset dataset. This is also the reference height for detecting a drop.
+CUBE_REST_HEIGHT = 0.06
 CUBE_HALF_SIDE = 0.01
 CUP_BOTTOM_HEIGHT = 0.004
 CUP_RIM_HEIGHT = 0.080

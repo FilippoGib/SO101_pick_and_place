@@ -27,12 +27,13 @@ STATE_SHAPES = {
     "joint_position": (6,),
     "joint_target": (6,),
     "cube_pose": (7,),
+    "cup_pose": (7,),
     "phase": (),
     "difficulty": (),
     "grasped": (),
     "lifted": (),
 }
-_FLOAT_FIELDS = ("joint_position", "joint_target", "cube_pose", "difficulty")
+_FLOAT_FIELDS = ("joint_position", "joint_target", "cube_pose", "cup_pose", "difficulty")
 _BOOL_FIELDS = ("grasped", "lifted")
 _INTEGER_DTYPES = {torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64}
 
@@ -64,6 +65,7 @@ def _canonical_states(states: Mapping[str, Any]) -> dict[str, torch.Tensor]:
         "joint_position": states["joint_position"].detach().cpu().to(torch.float32).contiguous(),
         "joint_target": states["joint_target"].detach().cpu().to(torch.float32).contiguous(),
         "cube_pose": states["cube_pose"].detach().cpu().to(torch.float32).contiguous(),
+        "cup_pose": states["cup_pose"].detach().cpu().to(torch.float32).contiguous(),
         "phase": states["phase"].detach().cpu().to(torch.int64).contiguous(),
         "difficulty": states["difficulty"].detach().cpu().to(torch.float32).contiguous(),
         "grasped": states["grasped"].detach().cpu().to(torch.bool).contiguous(),
@@ -90,9 +92,10 @@ def validate_reset_states(states: Mapping[str, Any]) -> int:
         raise ValueError("Reset phase IDs are outside the declared phase table.")
     if bool(((states["difficulty"] < 0.0) | (states["difficulty"] > 1.0)).any()):
         raise ValueError("Reset difficulty must lie in [0, 1].")
-    quaternion_norm = torch.linalg.vector_norm(states["cube_pose"][:, 3:7], dim=-1)
-    if not bool(torch.allclose(quaternion_norm, torch.ones_like(quaternion_norm), atol=2.0e-3, rtol=0.0)):
-        raise ValueError("Reset cube quaternions must be normalized XYZW quaternions.")
+    for name in ("cube_pose", "cup_pose"):
+        quaternion_norm = torch.linalg.vector_norm(states[name][:, 3:7], dim=-1)
+        if not bool(torch.allclose(quaternion_norm, torch.ones_like(quaternion_norm), atol=2.0e-3, rtol=0.0)):
+            raise ValueError(f"Reset {name} quaternions must be normalized XYZW quaternions.")
     return row_count
 
 
@@ -150,7 +153,7 @@ def load_reset_dataset(path: str | Path, device: str | torch.device = "cpu") -> 
     source = Path(path).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(
-            f"Reset dataset not found at {source}. Generate it with `uv run generate-so101-resets`."
+            f"Reset dataset not found at {source}. Generate it with `uv run generate-so101-cube-resets`."
         )
     artifact = torch.load(source, map_location="cpu", weights_only=True)
     if not isinstance(artifact, dict) or artifact.get("format") != FORMAT:

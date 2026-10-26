@@ -44,9 +44,9 @@ from isaaclab_tasks.utils import PresetCfg, preset
 
 from isaaclab_assets.robots import so101
 
-from isaaclab_tutorial.assets import CUBE_USD, CUP_USD, DESK_USD
+from isaaclab_tutorial.assets import CUBE_RESET_DATASET, CUBE_USD, CUP_USD, DESK_USD
 from isaaclab_tutorial.tasks.place_cube import mdp
-from isaaclab_tutorial.tasks.place_cube.reset.curriculum import CANONICAL_START
+from isaaclab_tutorial.tasks.place_cube.reset.curriculum import ALL_PHASES, CANONICAL_START
 
 from .lesson_scaffold import (  # noqa: F401 -- supplied for the lesson 01-04 replacements
     AgentObservationGroupsCfg,
@@ -653,7 +653,11 @@ class EventsCfg:
             "operation": "abs",
         },
     )
-    reset_from_dataset = None
+    reset_from_dataset = EventTerm(
+        func=mdp.ResetFromDataset,
+        mode="reset",
+        params={"dataset_path": str(CUBE_RESET_DATASET), "sequential": False, "phase_weights": ALL_PHASES},
+    )
 
 
 # END lesson-05-dataset-resets
@@ -725,7 +729,15 @@ class Sim2RealEventsCfg(EventsCfg):
     def __post_init__(self):
         self.cube_mass.mode = "reset"
         self.cube_mass.params["mass_distribution_params"] = (0.012, 0.030)
-        self.reset_from_dataset = None
+        self.reset_from_dataset.params.update(
+            phase_weights=CANONICAL_START,
+            home_position_noise=0.02,
+            home_heading_noise=math.radians(15),
+            home_cup_position_noise=0.005,
+            home_cup_yaw_noise=math.radians(5),
+            home_cup_clearance=0.001,
+            support_height_range=(0.0, 0.004),
+        )
 
 
 # BEGIN lesson-05-rewards
@@ -742,8 +754,8 @@ class RewardsCfg:
         func=mdp.is_terminated_term, weight=-50.0, params={"term_keys": ["cube_out_of_bounds", "cube_dropped"]}
     )
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
-    joint_velocity = RewTerm(func=mdp.joint_vel_l2, weight=-0.0002)
-    joint_limits = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)
+    joint_velocity = RewTerm(func=mdp.joint_velocity_l2, weight=-0.0002)
+    joint_limits = RewTerm(func=mdp.joint_position_limits, weight=-1.0)
     jaw_support_force = preset(
         default=None,
         sim2real=RewTerm(func=mdp.jaw_support_force, weight=-8.0, params={"free_force": 0.25, "force_span": 2.0}),
@@ -780,8 +792,9 @@ class PhysicsCfg(PresetCfg):
         solver_cfg=MJWarpSolverCfg(
             solver="newton",
             integrator="implicitfast",
-            njmax=300,
-            nconmax=200,
+            # The hollow cup mesh generates more contact constraints than the vial mesh at 4096 environments.
+            njmax=512,
+            nconmax=512,
             cone="pyramidal",
             impratio=10.0,
             update_data_interval=2,

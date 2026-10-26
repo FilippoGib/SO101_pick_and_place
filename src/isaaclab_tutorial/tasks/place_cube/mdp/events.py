@@ -91,7 +91,7 @@ class ResetFromDataset(ManagerTermBase):
         def uniform(shape, bound):
             return torch.empty(shape, device=env.device).uniform_(-bound, bound) * home
 
-        cup_pose = env.scene["cup"].data.default_root_pose.torch[ids].clone()
+        cup_pose = states["cup_pose"].clone()
         cup_pose[:, :2] += uniform((n, 2), home_cup_position_noise)
         cup_pose[:, 3:] = quat_mul(_yaw_quat(uniform((n, 1), home_cup_yaw_noise)[:, 0]), cup_pose[:, 3:])
         cube_pose = states["cube_pose"].clone()
