@@ -15,8 +15,9 @@ __all__ = [
     "randomize_joint_viscous_friction",
     "randomize_wrist_camera_mount",
     "success",
+    "transport_progress",
     "cube_dropped",
-    "cube_on_cylinder_frame",
+    "cube_on_tray_frame",
     "wrist_rgb",
     "abnormal_robot_state",
     "body_state_b",
@@ -34,7 +35,7 @@ from .events import (
     randomize_wrist_camera_mount,
 )
 from .observations import (
-    cube_on_cylinder_frame,
+    cube_on_tray_frame,
     encoder_joint_pos,
     encoder_joint_target,
     jaw_contact_flags,
@@ -52,6 +53,7 @@ from .rewards import (
     joint_velocity_l2,
     milestones,
     success,
+    transport_progress,
 )
-from .task import cube_on_cylinder, cube_supported
+from .task import cube_on_tray, cube_supported
 from .terminations import cube_dropped, placement_success

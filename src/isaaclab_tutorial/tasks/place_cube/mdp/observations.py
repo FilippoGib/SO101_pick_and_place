@@ -1,4 +1,4 @@
-"""Cube/cylinder task observations and deployable wrist-camera observations."""
+"""Cube/tray task observations and deployable wrist-camera observations."""
 
 from collections.abc import Sequence
 
@@ -25,18 +25,22 @@ def encoder_joint_target(env, asset_cfg):
     return joint_target(env, asset_cfg) + getattr(env, "_so101_encoder_bias", 0.0)
 
 
-def cube_on_cylinder_frame(env):
-    cube, cylinder = env.scene["cube"], env.scene["cylinder"]
-    bottom, offset = cube_bottom_and_center_offset(
-        cube.data.root_pos_w.torch, cube.data.root_quat_w.torch, cylinder.data.root_pos_w.torch
+def cube_on_tray_frame(env):
+    cube, tray = env.scene["cube"], env.scene["tray"]
+    bottom, offset, _ = cube_bottom_and_center_offset(
+        cube.data.root_pos_w.torch,
+        cube.data.root_quat_w.torch,
+        tray.data.root_pos_w.torch,
+        tray.data.root_quat_w.torch,
     )
     return torch.cat((offset, bottom[:, None]), dim=-1)
 
 
 def placement_features(env):
-    cube, cylinder = env.scene["cube"], env.scene["cylinder"]
-    bottom, offset = cube_bottom_and_center_offset(
-        cube.data.root_pos_w.torch, cube.data.root_quat_w.torch, cylinder.data.root_pos_w.torch
+    cube, tray = env.scene["cube"], env.scene["tray"]
+    bottom, offset, _ = cube_bottom_and_center_offset(
+        cube.data.root_pos_w.torch, cube.data.root_quat_w.torch, tray.data.root_pos_w.torch,
+        tray.data.root_quat_w.torch
     )
     cube = env.scene["cube"]
     speed = torch.linalg.vector_norm(cube.data.root_lin_vel_w.torch, dim=-1)

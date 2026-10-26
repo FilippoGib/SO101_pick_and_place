@@ -18,11 +18,12 @@ uv run pytest -q
 Add `--extra video` to commands that record video. Add `--extra wandb` and
 configure `agent.logger=wandb` for Weights & Biases tracking.
 
-## Cube on cylinder
+## Cube in square tray
 
 The cube task picks up a 2 cm cube and releases it approximately at the center
-of a solid cylinder 3 cm in radius and 1 cm high. Success requires release,
-support on the cylinder's top surface, centered placement, and stable cube
+of a four-cell tray with square openings. Each opening is 2.25 cm per side,
+leaving clearance around the 2 cm cube. Success requires the cube to reach the
+bottom of any cell with no jaw contact and stable motion.
 motion.
 
 ### Tasks
@@ -49,7 +50,7 @@ uv run view-so101-cube-resets \
   --dataset src/isaaclab_tutorial/assets/cube_reset_poses.pt
 ```
 
-The dataset contains robot state, cube pose, cylinder pose, phase, difficulty, and
+The dataset contains robot state, cube pose, tray pose, phase, difficulty, and
 latched grasp/lift flags. It is intentionally not compatible with the vial
 dataset.
 
@@ -88,8 +89,8 @@ For camera PPO from scratch, add
 
 ### Evaluation
 
-The evaluator uses cube/cylinder-specific output fields for cube tasks:
-`on_cylinder_rate`, `cube_lost_rate`, and cylinder contact-force metrics.
+The evaluator uses cube/tray-specific output fields for cube tasks:
+`in_tray_rate`, `cube_lost_rate`, and tray contact-force metrics.
 
 ```bash
 SO101_EVALUATION_EPISODES=1024 \
@@ -169,7 +170,7 @@ The implementation is organized by task:
 src/isaaclab_tutorial/
   assets/workshop/                         USD assets
   tasks/place_vial/                        legacy vial/rack task
-  tasks/place_cube/                        cube/cylinder task
+  tasks/place_cube/                        cube/tray task
   utils/evaluation.py                      task-aware exact episode counter
 tests/                                     unit and configuration tests
 ```

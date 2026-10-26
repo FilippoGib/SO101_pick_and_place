@@ -1,4 +1,4 @@
-"""Cube-on-cylinder success and failure conditions."""
+"""Cube-on-tray success and failure conditions."""
 
 from collections.abc import Sequence
 
@@ -21,12 +21,12 @@ class placement_success(ManagerTermBase):
     def __init__(self, cfg: TerminationTermCfg, env):
         super().__init__(cfg, env)
         self.progress = placement_progress(env)
-        self.max_cylinder_force = torch.zeros(self.num_envs, device=self.device)
+        self.max_tray_force = torch.zeros(self.num_envs, device=self.device)
 
     def reset(self, env_ids: Sequence[int] | None = None):
         ids = slice(None) if env_ids is None else env_ids
         self.progress.reset(ids)
-        self.max_cylinder_force[ids] = 0.0
+        self.max_tray_force[ids] = 0.0
         if hasattr(self._env, "_so101_reset_grasped"):
             grasped = self._env._so101_reset_grasped[ids]
             self.progress.grasped[ids] = grasped
@@ -42,8 +42,8 @@ class placement_success(ManagerTermBase):
             torch.linalg.vector_norm(cube.data.root_ang_vel_w.torch, dim=-1) < 0.8
         )
         seated = contained & released & still
-        impact = contact_force(env, "cube_cylinder_contact")
-        self.max_cylinder_force = torch.maximum(self.max_cylinder_force, impact)
+        impact = contact_force(env, "cube_tray_contact")
+        self.max_tray_force = torch.maximum(self.max_tray_force, impact)
         success = self.progress.update(
             fixed & moving & (cube_height(env) > CUBE_REST_HEIGHT + 0.006),
             cube_height(env) > 0.08,
@@ -55,14 +55,14 @@ class placement_success(ManagerTermBase):
         log = env.extras.setdefault("log", {})
         log["Metrics/grasp_rate"] = self.progress.grasped.float().mean()
         log["Metrics/lift_rate"] = self.progress.lifted.float().mean()
-        log["Metrics/on_cylinder_rate"] = self.progress.inside.float().mean()
+        log["Metrics/on_tray_rate"] = self.progress.inside.float().mean()
         log["Metrics/success_rate"] = success.float().mean()
         env._so101_terminal_progress = torch.stack(
             (self.progress.grasped, self.progress.lifted, self.progress.inside, torch.zeros_like(self.progress.inside)),
             dim=-1,
         )
         env._so101_terminal_time_to_success_s = self.progress.time_to_success.float() * env.step_dt
-        env._so101_terminal_max_cylinder_force = self.max_cylinder_force.clone()
+        env._so101_terminal_max_tray_force = self.max_tray_force.clone()
         return success
 
 

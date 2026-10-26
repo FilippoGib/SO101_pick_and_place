@@ -9,6 +9,7 @@ def Xform "Cube" (
     apiSchemas = ["PhysicsRigidBodyAPI"]
 ) {
     def Cube "Visual" {
+        double size = 1
         float3 xformOp:scale = (0.02, 0.02, 0.02)
         uniform token[] xformOpOrder = ["xformOp:scale"]
         color3f[] primvars:displayColor = [(0.15, 0.55, 0.95)]
@@ -16,6 +17,7 @@ def Xform "Cube" (
     def Cube "Collision" (
         apiSchemas = ["PhysicsCollisionAPI"]
     ) {
+        double size = 1
         float3 xformOp:scale = (0.02, 0.02, 0.02)
         uniform token[] xformOpOrder = ["xformOp:scale"]
         bool physics:collisionEnabled = true

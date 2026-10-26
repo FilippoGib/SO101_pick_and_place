@@ -11,6 +11,7 @@ RESET_DATASET = ASSET_ROOT / "reset_poses.pt"
 CUBE_RESET_DATASET = ASSET_ROOT / "cube_reset_poses.pt"
 CUBE_USD = ASSET_ROOT / "workshop" / "cube_2cm.usda"
 CYLINDER_USD = ASSET_ROOT / "workshop" / "cylinder_3cm.usda"
+CUBE_TRAY_USD = ASSET_ROOT / "workshop" / "cube_tray.usda"
 
 
 def validate_assets() -> list[str]:
@@ -26,6 +27,7 @@ def validate_assets() -> list[str]:
             CUBE_RESET_DATASET,
             CUBE_USD,
             CYLINDER_USD,
+            CUBE_TRAY_USD,
         )
         if not path.is_file()
     ]

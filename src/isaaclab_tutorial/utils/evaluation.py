@@ -99,7 +99,7 @@ def _install_episode_counter(target: int) -> list[str]:
             cube_task = _is_cube_task(self.unwrapped)
             runtime = {
                 "success_criterion": (
-                    "cube_stable_on_cylinder_v1"
+                    "cube_seated_in_tray_v1"
                     if cube_task
                     else "any_rack_hole_v1"
                 ),
@@ -159,7 +159,7 @@ def _install_episode_counter(target: int) -> list[str]:
             initial_rows = self.unwrapped._so101_reset_row.cpu().tolist()
             for key, attribute in (
                 ("object_pose", "_so101_reset_cube_pose" if cube_task else "_so101_reset_vial_pose"),
-                ("container_pose", "_so101_reset_cylinder_pose" if cube_task else "_so101_reset_rack_pose"),
+                ("container_pose", "_so101_reset_tray_pose" if cube_task else "_so101_reset_rack_pose"),
                 ("support_height_m", "_so101_support_height"),
                 ("encoder_bias_rad", "_so101_encoder_bias"),
             ):
@@ -196,7 +196,7 @@ def _install_episode_counter(target: int) -> list[str]:
             for hole in terminal_hole[done_ids][success].tolist():
                 successes_by_hole[hole] += 1
         progress = env._so101_terminal_progress[done_ids]
-        peak_force_attribute = "_so101_terminal_max_cylinder_force" if cube_task else "_so101_terminal_max_rack_force"
+        peak_force_attribute = "_so101_terminal_max_tray_force" if cube_task else "_so101_terminal_max_rack_force"
         peak_force = getattr(env, peak_force_attribute)[done_ids]
         support_force = getattr(env, "_so101_terminal_max_support_force", None)
         support_time = getattr(env, "_so101_terminal_support_contact_time", None)
@@ -238,9 +238,9 @@ def _install_episode_counter(target: int) -> list[str]:
                         **({"hole_index": int(terminal_hole[env_id])} if terminal_hole is not None else {}),
                         "grasped": bool(progress[index, 0]),
                         "lifted": bool(progress[index, 1]),
-                        ("on_cylinder" if cube_task else "inserted"): bool(progress[index, 2]),
+                        ("in_tray" if cube_task else "inserted"): bool(progress[index, 2]),
                         (
-                            "peak_cylinder_contact_force_n" if cube_task else "peak_rack_force_n"
+                            "peak_tray_contact_force_n" if cube_task else "peak_rack_force_n"
                         ): float(peak_force[index]),
                         **(
                             {
@@ -272,10 +272,10 @@ def _install_episode_counter(target: int) -> list[str]:
             }
             if cube_task:
                 summary.update(
-                    on_cylinder_rate=counts["inside"] / episodes,
+                    in_tray_rate=counts["inside"] / episodes,
                     cube_lost_rate=counts["cube_lost"] / episodes,
-                    mean_peak_cylinder_contact_force_n=sums["peak_rack_force"] / episodes,
-                    max_cylinder_contact_force_n=max_rack_force,
+                    mean_peak_tray_contact_force_n=sums["peak_rack_force"] / episodes,
+                    max_tray_contact_force_n=max_rack_force,
                 )
                 summary.pop("insertion_rate", None)
                 summary.pop("vial_lost_rate", None)

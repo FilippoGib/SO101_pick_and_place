@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-FORMAT = "so101-cube-cylinder-reset-dataset"
+FORMAT = "so101-cube-tray-reset-dataset"
 SCHEMA_VERSION = 3
 PHASE_NAMES = (
     "approach",
@@ -27,13 +27,13 @@ STATE_SHAPES = {
     "joint_position": (6,),
     "joint_target": (6,),
     "cube_pose": (7,),
-    "cylinder_pose": (7,),
+    "tray_pose": (7,),
     "phase": (),
     "difficulty": (),
     "grasped": (),
     "lifted": (),
 }
-_FLOAT_FIELDS = ("joint_position", "joint_target", "cube_pose", "cylinder_pose", "difficulty")
+_FLOAT_FIELDS = ("joint_position", "joint_target", "cube_pose", "tray_pose", "difficulty")
 _BOOL_FIELDS = ("grasped", "lifted")
 _INTEGER_DTYPES = {torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64}
 
@@ -65,7 +65,7 @@ def _canonical_states(states: Mapping[str, Any]) -> dict[str, torch.Tensor]:
         "joint_position": states["joint_position"].detach().cpu().to(torch.float32).contiguous(),
         "joint_target": states["joint_target"].detach().cpu().to(torch.float32).contiguous(),
         "cube_pose": states["cube_pose"].detach().cpu().to(torch.float32).contiguous(),
-        "cylinder_pose": states["cylinder_pose"].detach().cpu().to(torch.float32).contiguous(),
+        "tray_pose": states["tray_pose"].detach().cpu().to(torch.float32).contiguous(),
         "phase": states["phase"].detach().cpu().to(torch.int64).contiguous(),
         "difficulty": states["difficulty"].detach().cpu().to(torch.float32).contiguous(),
         "grasped": states["grasped"].detach().cpu().to(torch.bool).contiguous(),
@@ -92,7 +92,7 @@ def validate_reset_states(states: Mapping[str, Any]) -> int:
         raise ValueError("Reset phase IDs are outside the declared phase table.")
     if bool(((states["difficulty"] < 0.0) | (states["difficulty"] > 1.0)).any()):
         raise ValueError("Reset difficulty must lie in [0, 1].")
-    for name in ("cube_pose", "cylinder_pose"):
+    for name in ("cube_pose", "tray_pose"):
         quaternion_norm = torch.linalg.vector_norm(states[name][:, 3:7], dim=-1)
         if not bool(torch.allclose(quaternion_norm, torch.ones_like(quaternion_norm), atol=2.0e-3, rtol=0.0)):
             raise ValueError(f"Reset {name} quaternions must be normalized XYZW quaternions.")

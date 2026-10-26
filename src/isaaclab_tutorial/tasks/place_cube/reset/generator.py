@@ -1,4 +1,4 @@
-"""Generate and inspect simulator-validated cube/cylinder reset states."""
+"""Generate and inspect simulator-validated cube/tray reset states."""
 
 from __future__ import annotations
 
@@ -64,22 +64,22 @@ def generate_states(cfg: GeneratorCfg) -> dict[str, torch.Tensor]:
     joint_position = phase_joints[phases].clone()
     joint_target = joint_position.clone()
     cube_pose = torch.zeros(count, 7)
-    cylinder_pose = torch.zeros(count, 7)
+    tray_pose = torch.zeros(count, 7)
     cube_pose[:, :3] = torch.tensor(TABLETOP_CUBE_POSITION)
-    cylinder_pose[:, :3] = torch.tensor((0.18, 0.08, 0.035))
+    tray_pose[:, :3] = torch.tensor((0.18, 0.08, 0.04))
     cube_pose[:, 3:] = torch.tensor((0.0, 0.7071068, 0.0, 0.7071068))
-    cylinder_pose[:, 6] = 1.0
+    tray_pose[:, 6] = 1.0
 
     home = phases == 0
     cube_pose[home, :2] += noise[home] * torch.tensor((0.06, 0.08))
-    cylinder_pose[home, :2] += noise[home] * torch.tensor((0.01, 0.01))
-    cylinder_pose[home, 3:] = _yaw(noise[:, 0] * 0.2)[home]
+    tray_pose[home, :2] += noise[home] * torch.tensor((0.01, 0.01))
+    tray_pose[home, 3:] = _yaw(noise[:, 0] * 0.2)[home]
 
     grasped = phases >= 2
     lifted = phases >= 3
     cube_pose[grasped, 2] = 0.12
     cube_pose[phases >= 5, :3] = torch.tensor((0.18, 0.08, 0.10))
-    # Leave a small clearance above the cylinder top for the first validated step;
+    # Leave a small clearance above the tray top for the first validated step;
     # the cube settles onto the support without starting in mesh penetration.
     cube_pose[phases >= 6, 2] = 0.065
     joint_position[:, -1] = torch.where(
@@ -92,7 +92,7 @@ def generate_states(cfg: GeneratorCfg) -> dict[str, torch.Tensor]:
         "joint_position": joint_position,
         "joint_target": joint_target,
         "cube_pose": cube_pose,
-        "cylinder_pose": cylinder_pose,
+        "tray_pose": tray_pose,
         "phase": phases,
         "difficulty": phases.float() / 7.0,
         "grasped": grasped,
@@ -138,13 +138,13 @@ def validate_states_in_sim(
             ids = torch.arange(env.num_envs, device=env.device)
             robot = env.scene["robot"]
             zeros = torch.zeros((env.num_envs, 6), device=env.device)
-            for name in ("joint_position", "joint_target", "cube_pose", "cylinder_pose"):
+            for name in ("joint_position", "joint_target", "cube_pose", "tray_pose"):
                 states[name] = states[name].to(env.device)
             robot.write_joint_position_to_sim_index(position=states["joint_position"], env_ids=ids)
             robot.write_joint_velocity_to_sim_index(velocity=zeros, env_ids=ids)
             robot.set_joint_position_target_index(target=states["joint_target"], env_ids=ids)
             robot.set_joint_velocity_target_index(target=zeros, env_ids=ids)
-            for name in ("cube", "cylinder"):
+            for name in ("cube", "tray"):
                 pose = states[f"{name}_pose"].clone()
                 pose[:, :3] += env.scene.env_origins
                 env.scene[name].write_root_pose_to_sim_index(root_pose=pose, env_ids=ids)
@@ -156,9 +156,9 @@ def validate_states_in_sim(
                 env.sim.step()
                 env.scene.update(env.physics_dt)
             cube = env.scene["cube"]
-            cylinder = env.scene["cylinder"]
+            tray = env.scene["tray"]
             finite = torch.isfinite(cube.data.root_pos_w.torch).all() & torch.isfinite(
-                cylinder.data.root_pos_w.torch
+                tray.data.root_pos_w.torch
             ).all()
             if not bool(finite.all()):
                 raise RuntimeError("Cube reset validation produced non-finite object poses.")
@@ -181,7 +181,7 @@ def validate_states_in_sim(
 def generate_main(argv: list[str] | None = None) -> int:
     from isaaclab.app import add_launcher_args
 
-    parser = argparse.ArgumentParser(description="Generate cube/cylinder SO-101 reset poses.")
+    parser = argparse.ArgumentParser(description="Generate cube/tray SO-101 reset poses.")
     parser.add_argument("--output", type=Path, default=CUBE_RESET_DATASET)
     parser.add_argument("--poses_per_phase", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
@@ -212,13 +212,13 @@ def generate_main(argv: list[str] | None = None) -> int:
             "trajectory_validation": validation,
         },
     )
-    print(f"[INFO] Wrote {artifact['row_count']} cube/cylinder reset poses to {Path(args.output).resolve()}.")
+    print(f"[INFO] Wrote {artifact['row_count']} cube/tray reset poses to {Path(args.output).resolve()}.")
     print(f"[INFO] Content SHA-256: {artifact['content_sha256']}")
     return 0
 
 
 def view_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Inspect cube/cylinder reset dataset metadata.")
+    parser = argparse.ArgumentParser(description="Inspect cube/tray reset dataset metadata.")
     parser.add_argument("--dataset", type=Path, default=CUBE_RESET_DATASET)
     args = _parse_args(parser, argv)
     artifact = load_reset_dataset(args.dataset)

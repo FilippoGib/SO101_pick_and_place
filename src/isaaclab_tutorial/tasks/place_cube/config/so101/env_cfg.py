@@ -44,7 +44,7 @@ from isaaclab_tasks.utils import PresetCfg, preset
 
 from isaaclab_assets.robots import so101
 
-from isaaclab_tutorial.assets import CUBE_RESET_DATASET, CUBE_USD, CYLINDER_USD, DESK_USD
+from isaaclab_tutorial.assets import CUBE_RESET_DATASET, CUBE_TRAY_USD, CUBE_USD, DESK_USD
 from isaaclab_tutorial.tasks.place_cube import mdp
 from isaaclab_tutorial.tasks.place_cube.reset.curriculum import ALL_PHASES, CANONICAL_START
 
@@ -447,7 +447,7 @@ def _jaw_support_sensor(link: str) -> ContactSensorCfg:
 
 @configclass
 class SO101SceneCfg(InteractiveSceneCfg):
-    """One SO-101, one cube, one cylinder, and a desk."""
+    """One SO-101, one cube, one tray, and a desk."""
 
     # BEGIN lesson-02-robot
     robot = SO101_CFG.replace(  # used to create a custom configuration
@@ -463,7 +463,7 @@ class SO101SceneCfg(InteractiveSceneCfg):
     # END lesson-02-robot
 
     # BEGIN lesson-03-objects
-    # Add the cube, cylinder, desk, and contact sensors in lesson 03.
+    # Add the cube, tray, desk, and contact sensors in lesson 03.
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
         spawn=CubeSpawnCfg(
@@ -482,14 +482,14 @@ class SO101SceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    cylinder = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Cylinder",
+    tray = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Tray",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=str(CYLINDER_USD),
+            usd_path=str(CUBE_TRAY_USD),
             func=_spawn_usd_with_contact_material,
             rigid_props=sim_utils.UsdPhysicsRigidBodyCfg(kinematic_enabled=True),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.18, 0.08, TABLETOP_Z)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.18, 0.08, 0.04)),
     )
 
     desk = AssetBaseCfg(
@@ -521,9 +521,9 @@ class SO101SceneCfg(InteractiveSceneCfg):
         filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube"],
         history_length=4,
     )
-    cube_cylinder_contact = ContactSensorCfg(
+    cube_tray_contact = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
-        filter_prim_paths_expr=["{ENV_REGEX_NS}/Cylinder"],
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/Tray"],
         history_length=4,
     )
     fixed_jaw_support = preset(default=None, sim2real=_jaw_support_sensor("gripper"))
@@ -595,7 +595,7 @@ class PolicyStateGroupCfg(ObsGroup):
         func=mdp.body_state_b,
         params={"body_asset_cfg": SceneEntityCfg("cube"), "base_asset_cfg": SceneEntityCfg("robot")},
     )
-    cube_on_cylinder = ObsTerm(func=mdp.cube_on_cylinder_frame)
+    cube_on_tray = ObsTerm(func=mdp.cube_on_tray_frame)
     placement = ObsTerm(func=mdp.placement_features)
     # Latched milestones make the once-per-episode milestone rewards Markov.
     progress = ObsTerm(func=mdp.progress_flags)
@@ -686,7 +686,7 @@ class Sim2RealEventsCfg(EventsCfg):
 
     cube_material = _material_event(SceneEntityCfg("cube"), (0.2, 1.3))
     jaw_material = _material_event(SceneEntityCfg("robot", body_names=["gripper", "moving_jaw_so101_v1"]), (0.2, 1.3))
-    cylinder_material = _material_event(SceneEntityCfg("cylinder"), (0.2, 1.0))
+    tray_material = _material_event(SceneEntityCfg("tray"), (0.2, 1.0))
     support_material = _material_event(SceneEntityCfg("support"), (0.3, 1.3))
     gripper_gains = EventTerm(
         func=mdp.randomize_actuator_gains,
@@ -735,9 +735,9 @@ class Sim2RealEventsCfg(EventsCfg):
             phase_weights=CANONICAL_START,
             home_position_noise=0.02,
             home_heading_noise=math.radians(15),
-            home_cylinder_position_noise=0.005,
-            home_cylinder_yaw_noise=math.radians(5),
-            home_cylinder_clearance=0.001,
+            home_tray_position_noise=0.005,
+            home_tray_yaw_noise=math.radians(5),
+            home_tray_clearance=0.001,
             support_height_range=(0.0, 0.004),
         )
 
@@ -749,7 +749,8 @@ class RewardsCfg:
 
     # Sim2real aims the pad centre slightly above the cap, favouring a shallower pinch clear of the mat.
     approach_progress = RewTerm(func=mdp.approach_progress, weight=1.0)
-    held_goal = RewTerm(func=mdp.held_goal, weight=0.1)
+    held_goal = RewTerm(func=mdp.held_goal, weight=1.0, params={"std": 0.10})
+    transport_progress = RewTerm(func=mdp.transport_progress, weight=2.0, params={"scale": 0.02})
     milestones = RewTerm(func=mdp.milestones, weight=10.0)
     success = RewTerm(func=mdp.success, weight=200.0)
     cube_lost = RewTerm(

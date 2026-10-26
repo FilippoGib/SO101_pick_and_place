@@ -1,18 +1,17 @@
-"""Cube, cylinder, gripper, and contact quantities shared by task terms."""
+"""Cube, tray, gripper, and contact quantities shared by task terms."""
 
 import torch
 
 from isaaclab.utils.math import quat_apply
 
-from .geometry import cube_bottom_and_center_offset, cylinder_placement_error
+from .geometry import cube_bottom_and_center_offset, tray_placement_error
 
 # The cube rests with its center at the tabletop pose used by the scene and
 # reset dataset. This is also the reference height for detecting a drop.
 CUBE_REST_HEIGHT = 0.06
 CUBE_HALF_SIDE = 0.01
-CYLINDER_RADIUS = 0.03
-CYLINDER_HEIGHT = 0.01
-CYLINDER_TOP_HEIGHT = 0.045
+TRAY_OPENING_SIDE = 0.0225
+TRAY_BOTTOM_HEIGHT = 0.014
 FIXED_FINGERTIP_OFFSET = (-0.01289, -0.00022, -0.0986)
 MOVING_FINGERTIP_OFFSET = (-0.0068, -0.0766, 0.0189)
 
@@ -51,27 +50,29 @@ def cube_height(env):
     return env.scene["cube"].data.root_pos_w.torch[:, 2] - env.scene.env_origins[:, 2]
 
 
-def cube_on_cylinder(env):
-    cube, cylinder = env.scene["cube"], env.scene["cylinder"]
-    bottom, offset = cube_bottom_and_center_offset(
+def cube_on_tray(env):
+    cube, tray = env.scene["cube"], env.scene["tray"]
+    bottom, offset, _ = cube_bottom_and_center_offset(
         cube.data.root_pos_w.torch,
         cube.data.root_quat_w.torch,
-        cylinder.data.root_pos_w.torch,
+        tray.data.root_pos_w.torch,
+        tray.data.root_quat_w.torch,
         CUBE_HALF_SIDE,
     )
-    return cylinder_placement_error(offset, bottom, CYLINDER_TOP_HEIGHT)
+    return tray_placement_error(offset, bottom, TRAY_BOTTOM_HEIGHT)
 
 
 def cube_supported(env):
-    from .geometry import cube_on_cylinder as _cube_on_cylinder
+    from .geometry import cube_in_tray as _cube_in_tray
 
-    cube, cylinder = env.scene["cube"], env.scene["cylinder"]
-    return _cube_on_cylinder(
+    cube, tray = env.scene["cube"], env.scene["tray"]
+    return _cube_in_tray(
         cube.data.root_pos_w.torch,
         cube.data.root_quat_w.torch,
-        cylinder.data.root_pos_w.torch,
-        CYLINDER_TOP_HEIGHT,
-        CYLINDER_RADIUS,
+        tray.data.root_pos_w.torch,
+        tray.data.root_quat_w.torch,
+        TRAY_BOTTOM_HEIGHT,
+        TRAY_OPENING_SIDE / 2.0,
         CUBE_HALF_SIDE,
     )
 

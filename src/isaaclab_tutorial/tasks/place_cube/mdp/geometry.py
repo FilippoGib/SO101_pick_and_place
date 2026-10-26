@@ -1,4 +1,4 @@
-"""Pure tensor geometry for cube placement on a cylindrical support."""
+"""Pure tensor geometry for cube placement in a four-cell square tray."""
 
 import torch
 
@@ -14,49 +14,64 @@ def quat_rotate_xyzw(quat: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
     )
 
 
-def cylinder_local_position(point_w: torch.Tensor, cylinder_pos_w: torch.Tensor) -> torch.Tensor:
-    return point_w - cylinder_pos_w
+TRAY_CELL_CENTERS = ((0.0, 0.0), (0.06, 0.0), (0.06, 0.06), (0.0, 0.06))
+
+
+def tray_local_position(
+    point_w: torch.Tensor, tray_pos_w: torch.Tensor, tray_quat_w: torch.Tensor
+) -> torch.Tensor:
+    return quat_rotate_xyzw(quat_conjugate_xyzw(tray_quat_w), point_w - tray_pos_w)
 
 
 def cube_bottom_and_center_offset(
     cube_pos_w: torch.Tensor,
     cube_quat_w: torch.Tensor,
-    cylinder_pos_w: torch.Tensor,
+    tray_pos_w: torch.Tensor,
+    tray_quat_w: torch.Tensor,
     half_side: float = 0.01,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     signs = cube_pos_w.new_tensor(
         [[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]]
     )
     corners_w = cube_pos_w[:, None, :] + quat_rotate_xyzw(cube_quat_w[:, None, :], signs[None, :, :] * half_side)
-    bottom = corners_w[..., 2].amin(dim=-1)
-    offset = cube_pos_w[:, :2] - cylinder_pos_w[:, :2]
-    return bottom, offset
+    corners = tray_local_position(
+        corners_w.reshape(-1, 3),
+        tray_pos_w[:, None, :].expand(-1, 8, -1).reshape(-1, 3),
+        tray_quat_w[:, None, :].expand(-1, 8, -1).reshape(-1, 4),
+    ).reshape(-1, 8, 3)
+    bottom = corners[..., 2].amin(dim=-1)
+    center = tray_local_position(cube_pos_w, tray_pos_w, tray_quat_w)
+    return bottom, center[..., :2], corners
 
 
-def cube_on_cylinder(
+def cube_in_tray(
     cube_pos_w: torch.Tensor,
     cube_quat_w: torch.Tensor,
-    cylinder_pos_w: torch.Tensor,
-    cylinder_top_height: float = 0.045,
-    cylinder_radius: float = 0.03,
+    tray_pos_w: torch.Tensor,
+    tray_quat_w: torch.Tensor,
+    tray_bottom_height: float = 0.014,
+    opening_half_side: float = 0.01125,
     half_side: float = 0.01,
 ) -> torch.Tensor:
-    bottom, offset = cube_bottom_and_center_offset(cube_pos_w, cube_quat_w, cylinder_pos_w, half_side)
-    return ((bottom - cylinder_top_height).abs() <= 0.004) & (
-        torch.linalg.vector_norm(offset, dim=-1) <= cylinder_radius - half_side
-    )
+    bottom, _, corners = cube_bottom_and_center_offset(cube_pos_w, cube_quat_w, tray_pos_w, tray_quat_w, half_side)
+    cell_centers = corners.new_tensor(TRAY_CELL_CENTERS)
+    xy = corners[..., :2]
+    inside = ((xy[:, None, :, :] - cell_centers[None, :, None, :]).abs() <= opening_half_side).all(dim=-1).all(dim=-1)
+    return ((bottom - tray_bottom_height).abs() <= 0.004) & inside.any(dim=-1)
 
 
-def cylinder_placement_error(offset: torch.Tensor, bottom: torch.Tensor, top_height: float = 0.045) -> torch.Tensor:
-    return torch.linalg.vector_norm(offset, dim=-1) + (bottom - top_height).abs()
+def tray_placement_error(offset: torch.Tensor, bottom: torch.Tensor, tray_bottom_height: float = 0.014) -> torch.Tensor:
+    cell_centers = offset.new_tensor(TRAY_CELL_CENTERS)
+    horizontal = torch.linalg.vector_norm(offset[:, None, :] - cell_centers[None, :, :], dim=-1).amin(dim=-1)
+    return horizontal + (bottom - tray_bottom_height).abs()
 
 
 def inside_bounds(point: torch.Tensor, lower: tuple[float, ...], upper: tuple[float, ...]) -> torch.Tensor:
     return ((point >= point.new_tensor(lower)) & (point <= point.new_tensor(upper))).all(dim=-1)
 
 
-def tabletop_cube_overlaps_cylinder(
-    cube_pose: torch.Tensor, cylinder_pose: torch.Tensor, clearance: float = 0.0
+def tabletop_cube_overlaps_tray(
+    cube_pose: torch.Tensor, tray_pose: torch.Tensor, clearance: float = 0.0
 ) -> torch.Tensor:
-    delta = cube_pose[:, :2] - cylinder_pose[:, :2]
+    delta = cube_pose[:, :2] - tray_pose[:, :2]
     return torch.linalg.vector_norm(delta, dim=-1) < 0.04 + clearance

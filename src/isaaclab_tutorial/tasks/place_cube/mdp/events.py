@@ -12,7 +12,7 @@ from isaaclab.utils.math import combine_frame_transforms, quat_from_euler_xyz, q
 
 from isaaclab_tutorial.tasks.place_cube.reset.dataset import load_reset_dataset
 
-from .geometry import tabletop_cube_overlaps_cylinder
+from .geometry import tabletop_cube_overlaps_tray
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -44,10 +44,10 @@ def phase_balanced_row_weights(phase: torch.Tensor, phase_weights: Sequence[floa
 
 
 class ResetFromDataset(ManagerTermBase):
-    """Reset robot, cube and cylinder to physics-validated dataset rows, sampled by phase or in order.
+    """Reset robot, cube and tray to physics-validated dataset rows, sampled by phase or in order.
 
-    Home rows (phase 0) can be perturbed: cube position and heading, cylinder position and yaw, and the mat height. A
-    cube that would overlap the cylinder is redrawn, falling back to its dataset pose. Mid-task rows are not perturbed.
+    Home rows (phase 0) can be perturbed: cube position and heading, tray position and yaw, and the mat height. A
+    cube that would overlap the tray is redrawn, falling back to its dataset pose. Mid-task rows are not perturbed.
     """
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedRLEnv):
@@ -66,9 +66,9 @@ class ResetFromDataset(ManagerTermBase):
         sequential: bool = False,
         home_position_noise: float = 0.0,
         home_heading_noise: float = 0.0,
-        home_cylinder_clearance: float = 0.0,
-        home_cylinder_position_noise: float = 0.0,
-        home_cylinder_yaw_noise: float = 0.0,
+        home_tray_clearance: float = 0.0,
+        home_tray_position_noise: float = 0.0,
+        home_tray_yaw_noise: float = 0.0,
         support_height_range: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         ids = _ids(env, env_ids)
@@ -91,20 +91,20 @@ class ResetFromDataset(ManagerTermBase):
         def uniform(shape, bound):
             return torch.empty(shape, device=env.device).uniform_(-bound, bound) * home
 
-        cylinder_pose = states["cylinder_pose"].clone()
-        cylinder_pose[:, :2] += uniform((n, 2), home_cylinder_position_noise)
-        cylinder_pose[:, 3:] = quat_mul(_yaw_quat(uniform((n, 1), home_cylinder_yaw_noise)[:, 0]), cylinder_pose[:, 3:])
+        tray_pose = states["tray_pose"].clone()
+        tray_pose[:, :2] += uniform((n, 2), home_tray_position_noise)
+        tray_pose[:, 3:] = quat_mul(_yaw_quat(uniform((n, 1), home_tray_yaw_noise)[:, 0]), tray_pose[:, 3:])
         cube_pose = states["cube_pose"].clone()
         cube_pose[:, 3:] = quat_mul(_yaw_quat(uniform((n, 1), home_heading_noise)[:, 0]), cube_pose[:, 3:])
         cube_pose[:, :2] += uniform((n, 2), home_position_noise)
         for _ in range(16):
-            redraw = tabletop_cube_overlaps_cylinder(cube_pose, cylinder_pose, home_cylinder_clearance) & home[:, 0]
+            redraw = tabletop_cube_overlaps_tray(cube_pose, tray_pose, home_tray_clearance) & home[:, 0]
             if not redraw.any():
                 break
             cube_pose[redraw, :2] = states["cube_pose"][redraw, :2] + uniform((n, 2), home_position_noise)[redraw]
         else:
             cube_pose[redraw, :2] = states["cube_pose"][redraw, :2]
-            cylinder_pose[redraw] = env.scene["cylinder"].data.default_root_pose.torch[ids[redraw]]
+            tray_pose[redraw] = env.scene["tray"].data.default_root_pose.torch[ids[redraw]]
 
         if "support" in env.scene.keys():  # noqa: SIM118 (InteractiveScene has no __contains__)
             # The 5 mm kinematic mat overlaps the desk; its exposed height spans bare desk to full mat.
@@ -118,7 +118,7 @@ class ResetFromDataset(ManagerTermBase):
             support_pose[:, :3] += env.scene.env_origins[ids]
             support.write_root_pose_to_sim_index(root_pose=support_pose, env_ids=ids)
             cube_pose[:, 2] += height
-            cylinder_pose[:, 2] += height
+            tray_pose[:, 2] += height
 
         # Read by the success term (restored milestones) and by evaluation (initial conditions).
         for name, value in (
@@ -126,13 +126,13 @@ class ResetFromDataset(ManagerTermBase):
             ("grasped", states["grasped"]),
             ("lifted", states["lifted"]),
             ("cube_pose", cube_pose),
-            ("cylinder_pose", cylinder_pose),
+            ("tray_pose", tray_pose),
         ):
             attribute = f"_so101_reset_{name}"
             if not hasattr(env, attribute):
                 setattr(env, attribute, value.new_zeros((env.num_envs, *value.shape[1:])))
             getattr(env, attribute)[ids] = value
-        for name, pose in (("cube", cube_pose), ("cylinder", cylinder_pose)):
+        for name, pose in (("cube", cube_pose), ("tray", tray_pose)):
             pose = pose.clone()
             pose[:, :3] += env.scene.env_origins[ids]
             env.scene[name].write_root_pose_to_sim_index(root_pose=pose, env_ids=ids)
