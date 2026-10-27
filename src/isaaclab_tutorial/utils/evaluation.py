@@ -62,13 +62,122 @@ def _install_episode_counter(target: int) -> list[str]:
     counted: torch.Tensor | None = None
     initial_rows: list[int] | None = None
     initial_poses: list[list[float]] | None = None
+    initial_cube_poses: tuple[list[list[float]], list[list[float]]] | None = None
     outcomes: list[dict] = []
     initial_conditions: dict = {}
     successes_by_hole = [0, 0, 0, 0]
+    cube_counts = dict.fromkeys(
+        (
+            "episodes",
+            "successes",
+            "grasped",
+            "lifted",
+            "placed",
+            "cube_lost",
+            "red_dropped",
+            "blue_toppled",
+            "timed_out",
+            "unsafe_stack_impact",
+        ),
+        0,
+    )
+    cube_sums = {"peak_stack_force": 0.0, "time_to_success": 0.0, "success_offset": 0.0}
+    max_stack_force = 0.0
     runtime = None
 
+    def finish(summary: dict) -> None:
+        """Print the result line, optionally save the audit, and stop play."""
+        print("SO101_EVAL_RESULT=" + json.dumps(summary, sort_keys=True), flush=True)
+        if output := os.environ.get("SO101_EVALUATION_OUTPUT"):
+            path = Path(output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "summary": summary,
+                        "argv": invocation,
+                        "runtime": runtime,
+                        "initial_conditions": initial_conditions,
+                        "checkpoint_sha256": checkpoint_sha256,
+                        "episodes": sorted(outcomes, key=lambda item: item["env_id"]),
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+        raise SystemExit(0)
+
+    def count_cube_episodes(env, done_ids: torch.Tensor) -> None:
+        """Accumulate red-on-blue stacking outcomes and finish once every world has finished one episode."""
+        nonlocal max_stack_force
+        runtime["success_criterion"] = "red_on_blue_v1"
+        terms = env.termination_manager
+        success = terms.get_term("success")[done_ids]
+        progress = env._so101_cube_terminal_progress[done_ids]
+        peak_force = env._so101_cube_terminal_max_stack_force[done_ids]
+        offset = env._so101_cube_terminal_horizontal_offset[done_ids]
+        red_dropped = terms.get_term("red_dropped")[done_ids]
+        blue_toppled = terms.get_term("blue_toppled")[done_ids]
+        out_of_bounds = (
+            terms.get_term("cube_a_out_of_bounds")[done_ids] | terms.get_term("cube_b_out_of_bounds")[done_ids]
+        )
+        cube_counts["episodes"] += int(done_ids.numel())
+        cube_counts["successes"] += int(success.sum())
+        cube_counts["grasped"] += int(progress[:, 0].sum())
+        cube_counts["lifted"] += int(progress[:, 1].sum())
+        cube_counts["placed"] += int(progress[:, 2].sum())
+        cube_counts["unsafe_stack_impact"] += int(progress[:, 3].sum())
+        cube_counts["red_dropped"] += int(red_dropped.sum())
+        cube_counts["blue_toppled"] += int(blue_toppled.sum())
+        cube_counts["cube_lost"] += int((red_dropped | blue_toppled | out_of_bounds).sum())
+        cube_counts["timed_out"] += int(terms.get_term("time_out")[done_ids].sum())
+        cube_sums["peak_stack_force"] += float(peak_force.sum())
+        cube_sums["time_to_success"] += float(env._so101_terminal_time_to_success_s[done_ids][success].sum())
+        cube_sums["success_offset"] += float(offset[success].sum())
+        max_stack_force = max(max_stack_force, float(peak_force.max()))
+        if os.environ.get("SO101_EVALUATION_OUTPUT"):
+            for index, env_id in enumerate(done_ids.tolist()):
+                outcomes.append(
+                    {
+                        "env_id": env_id,
+                        "reset_row": initial_rows[env_id] if initial_rows is not None else None,
+                        "initial_cube_a_pose": initial_cube_poses[0][env_id] if initial_cube_poses else None,
+                        "initial_cube_b_pose": initial_cube_poses[1][env_id] if initial_cube_poses else None,
+                        "success": bool(success[index]),
+                        "grasped": bool(progress[index, 0]),
+                        "lifted": bool(progress[index, 1]),
+                        "placed": bool(progress[index, 2]),
+                        "red_dropped": bool(red_dropped[index]),
+                        "blue_toppled": bool(blue_toppled[index]),
+                        "final_horizontal_offset_m": float(offset[index]),
+                        "peak_stack_contact_force_n": float(peak_force[index]),
+                    }
+                )
+        if cube_counts["episodes"] < target:
+            return
+        episodes, successes = cube_counts["episodes"], cube_counts["successes"]
+        finish(
+            {
+                "episodes": episodes,
+                "successes": successes,
+                "success_rate": successes / episodes,
+                "grasp_rate": cube_counts["grasped"] / episodes,
+                "lift_rate": cube_counts["lifted"] / episodes,
+                "place_rate": cube_counts["placed"] / episodes,
+                "cube_lost_rate": cube_counts["cube_lost"] / episodes,
+                "red_dropped_rate": cube_counts["red_dropped"] / episodes,
+                "blue_toppled_rate": cube_counts["blue_toppled"] / episodes,
+                "timeout_rate": cube_counts["timed_out"] / episodes,
+                "unsafe_stack_impact_rate": cube_counts["unsafe_stack_impact"] / episodes,
+                "mean_peak_stack_contact_force_n": cube_sums["peak_stack_force"] / episodes,
+                "max_stack_contact_force_n": max_stack_force,
+                "mean_time_to_success_s": cube_sums["time_to_success"] / successes if successes else None,
+                "mean_success_offset_m": cube_sums["success_offset"] / successes if successes else None,
+            }
+        )
+
     def counted_step(self, actions):
-        nonlocal counted, max_rack_force, initial_rows, initial_poses, runtime
+        nonlocal counted, max_rack_force, initial_rows, initial_poses, initial_cube_poses, runtime
         if runtime is None:
             manager = getattr(getattr(self.unwrapped, "sim", None), "physics_manager", None)
             forward = getattr(manager, "forward", None)
@@ -148,6 +257,11 @@ def _install_episode_counter(target: int) -> list[str]:
                     initial_conditions[key] = value.cpu().tolist()
         if initial_poses is None and hasattr(self.unwrapped, "_so101_reset_vial_pose"):
             initial_poses = self.unwrapped._so101_reset_vial_pose.cpu().tolist()
+        if initial_cube_poses is None and hasattr(self.unwrapped, "_so101_reset_cube_a_pose"):
+            initial_cube_poses = (
+                self.unwrapped._so101_reset_cube_a_pose.cpu().tolist(),
+                self.unwrapped._so101_reset_cube_b_pose.cpu().tolist(),
+            )
         result = original_step(self, actions)
         dones = result[2].bool()
         if counted is None:
@@ -160,6 +274,9 @@ def _install_episode_counter(target: int) -> list[str]:
         counted[done_ids] = True
 
         env = self.unwrapped
+        if hasattr(env, "_so101_cube_terminal_progress"):
+            count_cube_episodes(env, done_ids)
+            return result
         success = env.termination_manager.get_term("success")[done_ids]
         terminal_hole = getattr(env, "_so101_terminal_hole", None)
         if terminal_hole is not None:
@@ -236,25 +353,7 @@ def _install_episode_counter(target: int) -> list[str]:
                     mean_jaw_support_contact_time_s=sums["support_time"] / episodes,
                     jaw_support_over_1s_rate=sums["support_over_1s"] / episodes,
                 )
-            print("SO101_EVAL_RESULT=" + json.dumps(summary, sort_keys=True), flush=True)
-            if output := os.environ.get("SO101_EVALUATION_OUTPUT"):
-                path = Path(output)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    json.dumps(
-                        {
-                            "summary": summary,
-                            "argv": invocation,
-                            "runtime": runtime,
-                            "initial_conditions": initial_conditions,
-                            "checkpoint_sha256": checkpoint_sha256,
-                            "episodes": sorted(outcomes, key=lambda item: item["env_id"]),
-                        },
-                        indent=2,
-                    )
-                    + "\n"
-                )
-            raise SystemExit(0)
+            finish(summary)
         return result
 
     RslRlVecEnvWrapper.step = counted_step

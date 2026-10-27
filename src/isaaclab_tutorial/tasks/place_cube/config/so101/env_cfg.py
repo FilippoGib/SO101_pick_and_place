@@ -1,9 +1,9 @@
-"""SO-101 two-cube environment, with an opt-in ``sim2real`` preset.
+"""SO-101 red-on-blue cube stacking from full state, with an opt-in ``sim2real`` preset.
 
 The robot, desk, contact model and physics are copied from the vial task so this package can evolve independently.
-Two 30 mm cubes replace the vial and rack, at the vial's position and the rack footprint's center.
-:class:`SO101CubeEnvCfg` adds the vial task's actions, joint and cube observations, and safety terminations, but no
-rewards yet; :mod:`.inspection_env_cfg` only spawns and steps the scene.
+Two 30 mm cubes replace the vial and rack, at the vial's position and the rack footprint's center. The robot picks up
+the red cube (``cube_a``) and places it centered on the blue cube (``cube_b``). :mod:`.inspection_env_cfg` only spawns
+and steps the scene.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from isaaclab.envs.mdp.actions.actions_cfg import RelativeJointPositionActionCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.physics import PhysicsEvent, PhysxAutoCfg
@@ -42,13 +43,18 @@ from isaaclab_tasks.utils import PresetCfg, preset
 
 from isaaclab_assets.robots import so101
 
-from isaaclab_tutorial.assets import CUBE_USD, DESK_USD
+from isaaclab_tutorial.assets import CUBE_RESET_DATASET, CUBE_USD, DESK_USD
 from isaaclab_tutorial.tasks.place_cube import mdp
+from isaaclab_tutorial.tasks.place_cube.mdp.geometry import CUBE_SIZE
+from isaaclab_tutorial.tasks.place_cube.reset.curriculum import ALL_PHASES, CANONICAL_START
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 ARM_JOINTS = JOINTS[:-1]
 
+# Gripper commands of the real robot, shared with the vial task.
 PREGRASP_GRIPPER_POSITION = math.radians(14.64)
+GRASP_GRIPPER_POSITION = math.radians(-8.9)
+RELEASE_GRIPPER_POSITION = math.radians(36.97)
 
 WORKSHOP_INITIAL_JOINT_POSITION = (
     -0.1221070742,
@@ -64,7 +70,6 @@ BASE_SEATING_Z = 0.030081447775408447
 TABLETOP_Z = 0.035
 BASE_HEIGHT_CORRECTION = TABLETOP_Z - BASE_SEATING_Z
 
-CUBE_SIZE = 0.03
 # Cube centers start 0.5 mm above the desk top (the desk and the sim2real mat both top out at 35 mm) and settle.
 CUBE_SPAWN_Z = TABLETOP_Z + CUBE_SIZE / 2 + 0.0005
 # Cube A takes the vial's tabletop position; cube B the center of the rack's 120 mm footprint, which is the rack
@@ -457,9 +462,15 @@ class SO101CubeSceneCfg(InteractiveSceneCfg):
 
     # Unfiltered: OV PhysX cannot build a filtered contact view for the gripper link in a cloned scene.
     fixed_jaw_contact = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/gripper", history_length=4)
+    # Filtered to the red cube, so touching the blue cube is not mistaken for a grasp.
     moving_jaw_contact = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/moving_jaw_so101_v1",
-        filter_prim_paths_expr=["{ENV_REGEX_NS}/CubeA", "{ENV_REGEX_NS}/CubeB"],
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/CubeA"],
+        history_length=4,
+    )
+    cube_stack_contact = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/CubeA",
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/CubeB"],
         history_length=4,
     )
     fixed_jaw_support = preset(default=None, sim2real=_jaw_support_sensor("gripper"))
@@ -533,13 +544,22 @@ class ActionsCfg:
     )
 
 
+# BEGIN teacher-policy-observations
 @configclass
-class PolicyObservationsCfg(ObsGroup):
-    """Joint state, previous action, and both cube states in the robot base frame."""
+class PolicyStateGroupCfg(ObsGroup):
+    """Fully observed state actor inputs."""
 
     joint_pos = ObsTerm(func=mdp.joint_pos, params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINTS)})
     joint_vel = ObsTerm(func=mdp.joint_vel, params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINTS)})
+    joint_target = ObsTerm(func=mdp.joint_target, params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINTS)})
     previous_action = ObsTerm(func=mdp.last_action)
+    end_effector = ObsTerm(
+        func=mdp.body_state_b,
+        params={
+            "body_asset_cfg": SceneEntityCfg("robot", body_names="gripper"),
+            "base_asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
     cube_a = ObsTerm(
         func=mdp.body_state_b,
         params={"body_asset_cfg": SceneEntityCfg("cube_a"), "base_asset_cfg": SceneEntityCfg("robot")},
@@ -548,30 +568,192 @@ class PolicyObservationsCfg(ObsGroup):
         func=mdp.body_state_b,
         params={"body_asset_cfg": SceneEntityCfg("cube_b"), "base_asset_cfg": SceneEntityCfg("robot")},
     )
+    stack = ObsTerm(func=mdp.stack_features)
+    # Latched milestones make the once-per-episode milestone rewards Markov.
+    progress = ObsTerm(func=mdp.progress_flags)
 
     def __post_init__(self):
         self.enable_corruption = False
         self.concatenate_terms = True
 
 
+# END teacher-policy-observations
+
+
+# BEGIN teacher-critic-observations
+@configclass
+class CriticStateGroupCfg(PolicyStateGroupCfg):
+    """Privileged training critic inputs."""
+
+    contact = ObsTerm(func=mdp.jaw_contact_flags)
+
+
+# END teacher-critic-observations
+
+
 @configclass
 class ObservationsCfg:
-    policy: PolicyObservationsCfg = PolicyObservationsCfg()
+    policy: PolicyStateGroupCfg = PolicyStateGroupCfg()
+    critic: CriticStateGroupCfg = CriticStateGroupCfg()
+
+
+# Halving cube friction on PhysX reproduces Newton's in-hand grasp, as for the vial.
+CUBE_FRICTION_RANGE = (0.7, 1.3)
+PHYSX_CUBE_FRICTION_RANGE = tuple(v * 0.5 for v in CUBE_FRICTION_RANGE)
+
+
+def _startup_material(asset_cfg: SceneEntityCfg) -> EventTerm:
+    return EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": asset_cfg,
+            "static_friction_range": preset(default=CUBE_FRICTION_RANGE, physx=PHYSX_CUBE_FRICTION_RANGE),
+            "dynamic_friction_range": preset(default=CUBE_FRICTION_RANGE, physx=PHYSX_CUBE_FRICTION_RANGE),
+            "restitution_range": (0.0, 0.02),
+            "num_buckets": 32,
+        },
+    )
+
+
+# BEGIN teacher-dataset-resets
+@configclass
+class EventsCfg:
+    """Task-horizon resets from the physics-validated dataset plus modest cube variation."""
+
+    cube_a_material = _startup_material(SceneEntityCfg("cube_a"))
+    cube_b_material = _startup_material(SceneEntityCfg("cube_b"))
+    cube_a_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={"asset_cfg": SceneEntityCfg("cube_a"), "mass_distribution_params": (0.015, 0.025), "operation": "abs"},
+    )
+    reset_from_dataset = EventTerm(
+        func=mdp.ResetFromDataset,
+        mode="reset",
+        params={"dataset_path": str(CUBE_RESET_DATASET), "sequential": False, "phase_weights": ALL_PHASES},
+    )
+
+
+# END teacher-dataset-resets
+
+
+def _material_event(asset_cfg: SceneEntityCfg, friction_range: tuple[float, float]) -> EventTerm:
+    return EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        params={
+            "asset_cfg": asset_cfg,
+            "static_friction_range": friction_range,
+            "dynamic_friction_range": friction_range,
+            "restitution_range": (0.0, 0.02),
+            "num_buckets": 64,
+            "make_consistent": True,
+        },
+    )
 
 
 @configclass
-class EventsCfg:
-    """Every episode starts from the default robot and cube poses; cube mass is authored in the USD."""
+class Sim2RealEventsCfg(EventsCfg):
+    """Per-episode contact, motor, calibration and placement variation for robot transfer."""
 
-    reset_scene = EventTerm(func=mdp.reset_scene_to_default, mode="reset", params={"reset_joint_targets": True})
+    cube_a_material = _material_event(SceneEntityCfg("cube_a"), (0.2, 1.3))
+    cube_b_material = _material_event(SceneEntityCfg("cube_b"), (0.2, 1.0))
+    jaw_material = _material_event(SceneEntityCfg("robot", body_names=["gripper", "moving_jaw_so101_v1"]), (0.2, 1.3))
+    support_material = _material_event(SceneEntityCfg("support"), (0.3, 1.3))
+    gripper_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["gripper"]),
+            "stiffness_distribution_params": (0.6, 1.7),
+            "damping_distribution_params": (0.7, 1.5),
+            "operation": "scale",
+            "distribution": "log_uniform",
+        },
+    )
+    arm_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINTS),
+            "stiffness_distribution_params": (0.85, 1.15),
+            "damping_distribution_params": (0.7, 1.5),
+            "operation": "scale",
+            "distribution": "log_uniform",
+        },
+    )
+    joint_parameters = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=JOINTS),
+            "friction_distribution_params": (0.6, 2.5),
+            "armature_distribution_params": (0.7, 1.5),
+            "operation": "scale",
+            "distribution": "log_uniform",
+        },
+    )
+    joint_viscous_friction = EventTerm(
+        func=mdp.randomize_joint_viscous_friction,
+        mode="reset",
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINTS), "scale_range": (0.6, 3.5)},
+    )
+    encoder_bias = EventTerm(func=mdp.randomize_encoder_bias, mode="reset", params={"bound": 0.01})
+
+    def __post_init__(self):
+        self.cube_a_mass.mode = "reset"
+        self.cube_a_mass.params["mass_distribution_params"] = (0.012, 0.030)
+        self.reset_from_dataset.params.update(
+            phase_weights=CANONICAL_START,
+            home_red_position_noise=0.01,
+            home_red_yaw_noise=math.radians(10),
+            home_blue_position_noise=0.005,
+            home_blue_yaw_noise=math.radians(5),
+            home_min_cube_gap=0.06,
+            support_height_range=(0.0, 0.004),
+        )
+
+
+# BEGIN teacher-rewards
+@configclass
+class RewardsCfg:
+    """Sparse physical milestones, a success bonus, two dense shaping terms, and light regularization."""
+
+    # Sim2real aims the pad center slightly above the grasp point, favouring a shallower pinch clear of the mat.
+    approach_progress = RewTerm(
+        func=mdp.approach_progress, weight=1.0, params={"height_offset": preset(default=0.0, sim2real=0.008)}
+    )
+    held_goal = RewTerm(func=mdp.held_goal, weight=0.1)
+    milestones = RewTerm(func=mdp.milestones, weight=10.0)
+    success = RewTerm(func=mdp.success, weight=200.0)
+    cube_lost = RewTerm(
+        func=mdp.is_terminated_term,
+        weight=-50.0,
+        params={"term_keys": ["red_dropped", "blue_toppled", "cube_a_out_of_bounds", "cube_b_out_of_bounds"]},
+    )
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
+    joint_velocity = RewTerm(func=mdp.joint_vel_l2, weight=-0.0002)
+    joint_limits = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)
+    jaw_support_force = preset(
+        default=None,
+        sim2real=RewTerm(func=mdp.jaw_support_force, weight=-8.0, params={"free_force": 0.25, "force_span": 2.0}),
+    )
+
+
+# END teacher-rewards
 
 
 # The workspace bounds of the vial task, relative to the env origin. A cube pushed off the desk falls below z.
 CUBE_IN_BOUND_RANGE = {"x": (-0.55, 0.45), "y": (-0.62, 0.62), "z": (-0.01, 1.0)}
 
 
+# BEGIN teacher-terminations
 @configclass
 class TerminationsCfg:
+    success = DoneTerm(func=mdp.stack_success)
+    red_dropped = DoneTerm(func=mdp.red_dropped)
+    blue_toppled = DoneTerm(func=mdp.blue_toppled)
     cube_a_out_of_bounds = DoneTerm(
         func=mdp.out_of_bound, params={"asset_cfg": SceneEntityCfg("cube_a"), "in_bound_range": CUBE_IN_BOUND_RANGE}
     )
@@ -582,15 +764,19 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
 
+# END teacher-terminations
+
+
+# BEGIN teacher-environment
 @configclass
 class SO101CubeEnvCfg(ManagerBasedRLEnvCfg):
-    """Two-cube environment with actions, observations and terminations, ready for random or zero agents."""
+    """Red-on-blue stacking from full state, trained from physics-validated reset poses."""
 
     scene: SO101CubeSceneCfg = SO101CubeSceneCfg(num_envs=4096, env_spacing=0.9, replicate_physics=True)
     actions: ActionsCfg = ActionsCfg()
     observations: ObservationsCfg = ObservationsCfg()
-    events: EventsCfg = EventsCfg()
-    rewards = None
+    events: EventsCfg = preset(default=EventsCfg(), sim2real=Sim2RealEventsCfg())
+    rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
 
     def __post_init__(self):
@@ -610,3 +796,29 @@ class SO101CubeEnvCfg(ManagerBasedRLEnvCfg):
                 )
             ],
         )
+
+    def play_mode(self):
+        """Play and evaluate complete episodes from the home pose, in dataset order.
+
+        The nominal task pins both cubes to the workshop material and the red cube's mass; sim2real keeps its physics
+        randomization.
+        """
+        from isaaclab_tutorial.utils import evaluation
+
+        requested_num_envs = self.scene.num_envs
+        super().play_mode()
+        if evaluation.EXACT_EVALUATION_ACTIVE:
+            self.scene.num_envs = min(requested_num_envs, evaluation.EVALUATION_EPISODES)
+        else:
+            self.scene.num_envs = min(self.scene.num_envs, 16)
+        self.events.reset_from_dataset.params["sequential"] = True
+        self.events.reset_from_dataset.params["phase_weights"] = CANONICAL_START
+        if not isinstance(self.events, Sim2RealEventsCfg):
+            for name in ("cube_a_material", "cube_b_material"):
+                getattr(self.events, name).params.update(
+                    static_friction_range=(0.7, 0.7), dynamic_friction_range=(0.7, 0.7), restitution_range=(0.0, 0.0)
+                )
+            self.events.cube_a_mass.params["mass_distribution_params"] = (0.020, 0.020)
+
+
+# END teacher-environment

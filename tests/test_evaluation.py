@@ -124,3 +124,62 @@ def test_episode_counter_rejects_a_mismatched_batch(monkeypatch):
 def test_episode_counter_requires_a_positive_target():
     with pytest.raises(ValueError):
         _install_episode_counter(target=0)
+
+
+class _FakeCubeWrapper:
+    """Two cube-stacking worlds: one stacks the red cube, one drops it."""
+
+    def __init__(self):
+        self.num_envs = 2
+        self.unwrapped = self
+        self.cfg = SimpleNamespace(
+            scene=SimpleNamespace(robot=SimpleNamespace(init_state=SimpleNamespace(pos=(0, 0, 0))))
+        )
+        no = torch.tensor([False, False])
+        self.termination_manager = _TerminationManager(
+            {
+                "success": torch.tensor([True, False]),
+                "red_dropped": torch.tensor([False, True]),
+                "blue_toppled": no,
+                "cube_a_out_of_bounds": no,
+                "cube_b_out_of_bounds": no,
+                "time_out": no,
+            }
+        )
+        self._so101_reset_row = torch.tensor([0, 1])
+        self._so101_reset_cube_a_pose = torch.zeros(2, 7)
+        self._so101_reset_cube_b_pose = torch.ones(2, 7)
+        self._so101_cube_terminal_progress = torch.tensor([[True, True, True, False], [True, True, False, False]])
+        self._so101_cube_terminal_max_stack_force = torch.tensor([4.0, 0.0])
+        self._so101_cube_terminal_horizontal_offset = torch.tensor([0.003, 0.12])
+        self._so101_terminal_time_to_success_s = torch.tensor([9.0, 0.0])
+
+    def step(self, actions):
+        return None, None, torch.tensor([True, True]), {}
+
+
+def test_episode_counter_reports_cube_stacking_outcomes(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(rsl_rl, "RslRlVecEnvWrapper", _FakeCubeWrapper)
+    output = tmp_path / "cube_audit.json"
+    monkeypatch.setenv("SO101_EVALUATION_OUTPUT", str(output))
+    _install_episode_counter(target=2)
+    with pytest.raises(SystemExit):
+        _FakeCubeWrapper().step(torch.zeros((2, 6)))
+
+    line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("SO101_EVAL_RESULT="))
+    result = json.loads(line.removeprefix("SO101_EVAL_RESULT="))
+    assert result["episodes"] == 2 and result["successes"] == 1
+    assert result["success_rate"] == pytest.approx(0.5)
+    assert result["grasp_rate"] == pytest.approx(1.0) and result["lift_rate"] == pytest.approx(1.0)
+    assert result["place_rate"] == pytest.approx(0.5)
+    assert result["red_dropped_rate"] == pytest.approx(0.5) and result["cube_lost_rate"] == pytest.approx(0.5)
+    assert result["blue_toppled_rate"] == 0.0
+    assert result["max_stack_contact_force_n"] == pytest.approx(4.0)
+    assert result["mean_time_to_success_s"] == pytest.approx(9.0)
+    assert result["mean_success_offset_m"] == pytest.approx(0.003)
+    assert "insertion_rate" not in result and "vial_lost_rate" not in result
+    saved = json.loads(output.read_text())
+    assert saved["runtime"]["success_criterion"] == "red_on_blue_v1"
+    episodes = saved["episodes"]
+    assert [episode["placed"] for episode in episodes] == [True, False]
+    assert episodes[1]["red_dropped"] and episodes[0]["initial_cube_b_pose"] == [1.0] * 7

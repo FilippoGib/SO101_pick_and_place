@@ -51,7 +51,7 @@ def test_tasks_are_registered_with_rsl_rl_entry_points():
     ]
     cube_inspection, inspection, cube, state, camera = (gym.spec(task).kwargs for task in ids)
     assert cube["env_cfg_entry_point"].endswith("place_cube.config.so101.env_cfg:SO101CubeEnvCfg")
-    assert "rsl_rl_cfg_entry_point" not in cube
+    assert cube["rsl_rl_cfg_entry_point"].endswith("agents.rsl_rl_ppo_cfg:SO101CubeStatePPORunnerCfg")
     assert cube_inspection["env_cfg_entry_point"].endswith("inspection_env_cfg:SO101CubeInspectionEnvCfg")
     assert "rsl_rl_cfg_entry_point" not in cube_inspection
     assert inspection["env_cfg_entry_point"].endswith("inspection_env_cfg:SO101InspectionEnvCfg")
@@ -240,7 +240,10 @@ def test_cube_scene_replaces_the_vial_and_rack_with_two_resting_cubes():
         assert cube.spawn.usd_path == str(CUBE_USD)
         assert cube.spawn.variants == {"Color": color}
         assert cube.init_state.pos[2] - CUBE_SIZE / 2 == pytest.approx(TABLETOP_Z, abs=0.001)
-    assert scene.moving_jaw_contact.filter_prim_paths_expr == ["{ENV_REGEX_NS}/CubeA", "{ENV_REGEX_NS}/CubeB"]
+    # Grasp detection sees only the red cube; red/blue contact has its own sensor.
+    assert scene.moving_jaw_contact.filter_prim_paths_expr == ["{ENV_REGEX_NS}/CubeA"]
+    assert scene.cube_stack_contact.prim_path == "{ENV_REGEX_NS}/CubeA"
+    assert scene.cube_stack_contact.filter_prim_paths_expr == ["{ENV_REGEX_NS}/CubeB"]
     assert scene.support is None and scene.fixed_jaw_support is None
     assert scene.robot.init_state.pos == (-0.05, 0.0, 0.0)
     assert cfg.rewards is None and cfg.terminations is None
@@ -277,18 +280,89 @@ def test_cube_task_reuses_the_vial_actions_and_timing(presets):
     assert (cfg.scene.support is None) == (not presets)
 
 
-def test_cube_task_observes_joints_and_both_cubes_and_terminates_on_lost_cubes():
-    cfg = _cube()
-    policy = cfg.observations.policy
+def test_cube_teacher_observations_mirror_the_vial_teacher():
+    cfg, vial = _cube(), _state()
+    policy, critic = cfg.observations.policy, cfg.observations.critic
     for name in ("cube_a", "cube_b"):
         term = getattr(policy, name)
         assert term.params["body_asset_cfg"].name == name
         assert term.params["base_asset_cfg"].name == "robot"
-        bounds = getattr(cfg.terminations, f"{name}_out_of_bounds").params
+    shared = ("joint_pos", "joint_vel", "joint_target", "previous_action", "end_effector", "progress")
+    for name in shared:
+        # The cube package has its own copies of the task terms, so compare by name.
+        assert getattr(policy, name).func.__name__ == getattr(vial.observations.policy, name).func.__name__
+    assert set(vars(critic)) == set(vars(policy)) | {"contact"}
+    assert not policy.enable_corruption and policy.concatenate_terms
+
+
+def test_cube_teacher_terminations_and_rewards():
+    cfg = _cube()
+    terms = cfg.terminations
+    for name in ("cube_a", "cube_b"):
+        bounds = getattr(terms, f"{name}_out_of_bounds").params
         assert bounds["asset_cfg"].name == name
         assert bounds["in_bound_range"]["z"][0] < 0.035 - 0.015  # below the desk top
-    assert {"joint_pos", "joint_vel", "previous_action"} <= set(vars(policy))
-    assert not hasattr(cfg.observations, "critic")
-    assert cfg.terminations.time_out.time_out and cfg.terminations.unstable_robot is not None
-    assert cfg.rewards is None
-    assert cfg.events.reset_scene.params == {"reset_joint_targets": True}
+    assert {"success", "red_dropped", "blue_toppled", "unstable_robot", "time_out"} <= set(vars(terms))
+    assert terms.time_out.time_out and not terms.success.time_out
+    rewards = cfg.rewards
+    weights = {name: term.weight for name, term in vars(rewards).items() if term is not None}
+    assert weights == {
+        "approach_progress": 1.0,
+        "held_goal": 0.1,
+        "milestones": 10.0,
+        "success": 200.0,
+        "cube_lost": -50.0,
+        "action_rate": -0.002,
+        "joint_velocity": -0.0002,
+        "joint_limits": -1.0,
+    }
+    # Every term that loses a cube is penalized, and none of them is a time-out.
+    assert set(rewards.cube_lost.params["term_keys"]) == {
+        "red_dropped",
+        "blue_toppled",
+        "cube_a_out_of_bounds",
+        "cube_b_out_of_bounds",
+    }
+
+
+def test_cube_teacher_events_and_sim2real():
+    from isaaclab_tutorial.assets import CUBE_RESET_DATASET
+    from isaaclab_tutorial.tasks.place_cube.config.so101.env_cfg import Sim2RealEventsCfg
+    from isaaclab_tutorial.tasks.place_cube.reset.curriculum import ALL_PHASES as CUBE_ALL
+    from isaaclab_tutorial.tasks.place_cube.reset.curriculum import CANONICAL_START as CUBE_START
+
+    nominal, sim2real = _cube(), _cube("sim2real")
+    reset = nominal.events.reset_from_dataset.params
+    assert reset["dataset_path"] == str(CUBE_RESET_DATASET) and reset["phase_weights"] == CUBE_ALL
+    assert nominal.events.cube_a_mass.mode == "startup"
+    assert nominal.events.cube_a_mass.params["mass_distribution_params"] == (0.015, 0.025)
+    assert nominal.events.cube_a_material.params["static_friction_range"] == (0.7, 1.3)
+    assert isinstance(sim2real.events, Sim2RealEventsCfg)
+    assert sim2real.events.reset_from_dataset.params["phase_weights"] == CUBE_START
+    assert sim2real.events.reset_from_dataset.params["home_min_cube_gap"] >= 0.0425
+    assert sim2real.events.cube_a_mass.mode == "reset"
+    assert sim2real.rewards.jaw_support_force.weight == -8.0
+    assert sim2real.rewards.approach_progress.params["height_offset"] == 0.008
+
+
+@pytest.mark.parametrize("presets", [(), ("sim2real",)])
+def test_cube_play_uses_home_starts_and_pins_cubes_only_without_sim2real(monkeypatch, presets):
+    monkeypatch.setattr(evaluation, "EXACT_EVALUATION_ACTIVE", False)
+    cfg = _cube(*presets)
+    cfg.play_mode()
+    from isaaclab_tutorial.tasks.place_cube.reset.curriculum import CANONICAL_START as CUBE_START
+
+    assert cfg.events.reset_from_dataset.params["sequential"]
+    assert cfg.events.reset_from_dataset.params["phase_weights"] == CUBE_START
+    pinned = cfg.events.cube_a_material.params["static_friction_range"] == (0.7, 0.7)
+    assert pinned == (not presets)
+
+
+def test_cube_teacher_ppo_mirrors_the_vial_teacher():
+    from isaaclab_tutorial.tasks.place_cube.config.so101.agents.rsl_rl_ppo_cfg import SO101CubeStatePPORunnerCfg
+
+    cube, vial = SO101CubeStatePPORunnerCfg(), SO101StatePPORunnerCfg()
+    assert cube.experiment_name == "so101_cube_state" and cube.max_iterations == 1500
+    assert cube.obs_groups == vial.obs_groups == {"actor": ["policy"], "critic": ["critic"]}
+    assert cube.actor.to_dict() == vial.actor.to_dict() and cube.critic.to_dict() == vial.critic.to_dict()
+    assert cube.algorithm.to_dict() == vial.algorithm.to_dict()

@@ -23,7 +23,7 @@ Keep the markers and those comments.
   and a planning doc `agent.md`. Its history:
   "cube in cup — training instability, maybe geometry too complex?" → "cube on cylinder checkpoint" → "model not learning".
   To see it: `git show dev/cube_abandoned:agent.md` and `git diff main dev/cube_abandoned`.
-- `dev/cube_active` now has `tasks/place_cube/`, which has reached the lesson-04 stage (runs random/zero agents, no rewards yet); see "place_cube" below.
+- `dev/cube_active` now has `tasks/place_cube/`: red-on-blue stacking, ready for teacher training. See "place_cube" below.
 - The branch name suggests a fresh cube-manipulation attempt will happen here. Learn from the abandoned branch: keep the
   first target geometry simple, and validate the reset dataset and rewards before scaling up training.
 
@@ -81,7 +81,7 @@ src/isaaclab_tutorial/
                        CANONICAL_START (home only) vs ALL_PHASES
   assets/__init__.py                 paths: VIAL_USD, VIAL_LABELED_USD, RACK_USD, DESK_USD, CUBE_USD, RESET_DATASET (+ validate_assets)
   assets/workshop/*.usda             desk, rack, rack_simple, vial, vial_labeled, vial_opaque, cube_3cm
-  tasks/place_cube/                  two-cube scene + lesson-04 env, no rewards yet (see below)
+  tasks/place_cube/                  red-on-blue stacking teacher: mdp/, reset/, agents/ (see below)
   assets/reset_poses.pt              tracked through LFS; the only .pt file that is not gitignored
   utils/evaluation.py                exact episode counter for play (env SO101_EVALUATION_EPISODES / _OUTPUT)
   utils/export_leapp.py              exports the camera actor as a LEAPP bundle
@@ -104,40 +104,84 @@ Untracked, gitignored local outputs: `logs/rsl_rl/{so101_vial_state,so101_vial_c
 | `IsaacTutorial-Place-Vial-SO101-Camera` | `SO101VialCameraEnvCfg` | default `SO101CameraDistillationRunnerCfg`; `--agent rsl_rl_ppo_cfg_entry_point` → `SO101CameraPPORunnerCfg` |
 | `IsaacTutorial-Inspect-SO101` | `SO101InspectionEnvCfg` | none (no actions) |
 | `IsaacTutorial-Inspect-Cube-SO101` | `place_cube…SO101CubeInspectionEnvCfg` | none (no actions) |
-| `IsaacTutorial-Place-Cube-SO101` | `place_cube…SO101CubeEnvCfg` | none yet (random_agent / zero_agent only) |
+| `IsaacTutorial-Place-Cube-SO101` | `place_cube…SO101CubeEnvCfg` | `SO101CubeStatePPORunnerCfg` (exp `so101_cube_state`) |
 
-## place_cube (lesson-04 stage: no rewards, not trainable yet)
+## place_cube: red-on-blue stacking state teacher (ready to train)
 
-- `tasks/place_cube/config/so101/env_cfg.py` is a **copy** of the vial task's robot, desk, contact model, mat and
-  `PhysicsCfg`, so it is independent of `place_vial` (the user chose this). Fixes to shared infrastructure have to be
-  made in both copies. Both modules register a Newton MODEL_INIT contact callback under different names; when both
-  are imported, both run and write identical values.
-- `SO101CubeSceneCfg` contains robot, desk, `cube_a` (red) at the vial position (0.231, -0.017) and `cube_b` (blue) at
-  the rack footprint's center (0.2102, 0.1101). Both cubes start at z 0.0505 and settle to 0.050. The scene also has
-  `fixed_jaw_contact`, plus `moving_jaw_contact` filtered against both cubes. `sim2real` adds the same scene variants as
-  the vial task (base on the 35 mm tabletop, shoulder/elbow fits, gray mat, jaw-support sensors), but **no** per-episode
-  randomization events yet.
-- `assets/workshop/cube_3cm.usda` (`CUBE_USD`) is a 30 mm, 20 g rigid body with color variants `Color` = red/blue.
-  Colors are authored only inside the variants: local opinions would override them. Isaac Lab ignores the
-  `visual_material` override in kitless mode, so the cubes are colored through variants instead.
-- `SO101CubeEnvCfg` (in `env_cfg.py`) mirrors `SO101VialEnvCfg` at the lesson-04 stage.
-  - `ActionsCfg` is identical to the vial task's, including the sim2real scales.
-  - The `policy` observations are joint pos/vel (6+6), last action (6) and `body_state_b` for `cube_a`/`cube_b`
-    (13 each), giving **44** values. There is no `critic` group yet.
-  - `EventsCfg` only calls `reset_scene_to_default`.
-  - Terminations are `cube_a/b_out_of_bounds` (with the vial workspace bounds; falling off the desk trips the z bound),
-    `unstable_robot` and `time_out`.
-  - `rewards = None` and there is no `play_mode()`. Episodes last 20 s (30 s with sim2real); `record_video` writes to
-    `videos/simple_agents_cube`.
-- `place_cube/mdp/` follows the vial convention: `lazy_export()` + `__init__.pyi`, which re-exports
-  `isaaclab.envs.mdp.*` + lift `abnormal_robot_state`, `body_state_b`, `out_of_bound`. It is on the `import_packages`
-  skip list in `tasks/__init__.py`. **Put new cube terms here and list them in `__init__.pyi`.** There is no `reset/`
-  or agent config yet. The inspection env still imports `isaaclab.envs.mdp` directly.
-- Validated: random_agent on 64 envs × 600 steps, with and without sim2real. Moving a cube under the desk fires only that
-  env's `cube_a_out_of_bounds`, and the reset restores the default pose. Uniform random relative actions only make the
-  arm jitter near its start pose, so they never knock a cube off the desk.
+**Task:** pick up the red cube (`cube_a`) and place it on the blue cube (`cube_b`).
+- Success, held for **10 consecutive steps**:
+  - red center within **10 mm** horizontally of blue's center, 30 ± 4 mm above it
+  - red flat (a face within 15° of up)
+  - blue flat on the desk
+  - both cubes calm (< 0.05 m/s, < 0.5 rad/s)
+  - jaws released (no contact, gripper > 20% open)
+  - any yaw is accepted
+- Failures: `red_dropped` (lifted, then back at desk height), `blue_toppled` (tilt > 25° or off desk height; nudges
+  are fine), either cube out of bounds. All of them pay `cube_lost` = −50.
+
+**Structure**
+- `env_cfg.py` is a **copy** of the vial task's robot, desk, contact model, mat and `PhysicsCfg`; the user chose this.
+  Fixes to shared infrastructure must be made in both copies. Both modules register a Newton MODEL_INIT contact
+  callback under different names; when both are imported, both run and write identical values.
+- **Scene:** robot, desk, `cube_a` red at (0.231, −0.017), `cube_b` blue at the rack footprint center (0.2102, 0.1101).
+  Cubes start at z 0.0505 and settle to 0.050.
+  - Sensors: `fixed_jaw_contact` (unfiltered), `moving_jaw_contact` (filtered to **CubeA only**), `cube_stack_contact`
+    (CubeA vs CubeB, a metric only).
+  - `sim2real` adds the vial scene variants: base on the 35 mm tabletop, shoulder/elbow fits, gray mat, jaw-support
+    sensors.
+- **Asset:** `assets/workshop/cube_3cm.usda` (`CUBE_USD`) is a 30 mm, 20 g rigid body with a `Color` variant (red/blue).
+  Colors exist only inside the variants. Kitless Isaac Lab ignores `visual_material` overrides.
+- **`place_cube/mdp/`:** `lazy_export` + `__init__.pyi`, on the `import_packages` skip list.
+  - `geometry.py`: pure math. `CUBE_SIZE`, `DESK_TOP_Z`, `CUBE_REST_HEIGHT`, flatness, stack offset.
+  - `task.py`: all thresholds plus `stack_state`.
+  - `progress.py`: `StackProgress` (grasped/lifted/placed/success). Lifted, placed and success **require a grasp**.
+  - `observations.py`, `rewards.py`, `terminations.py`, `events.py`.
+  - Tests import the submodules by full dotted path, because the lazy `mdp` package also re-exports Isaac Lab's
+    `terminations`/`rewards` modules by name.
+- **Observations:**
+  - `policy` (**74** values): joint pos/vel/target, last action, gripper `body_state_b`, red and blue `body_state_b`,
+    `stack_features` (8), progress flags (3).
+  - `critic`: policy + jaw contact flags, **77** values.
+- **Rewards** (vial weights): approach_progress 1, held_goal 0.1, milestones 10 (grasp : lift : place = 1 : 2 : 4),
+  success 200, cube_lost −50, action_rate −0.002, joint_vel −0.0002, joint_limits −1, plus jaw_support −8 in sim2real.
+- **Events:**
+  - Nominal: startup red/blue friction 0.7–1.3, red mass 15–25 g, `ResetFromDataset` with all phases.
+  - `Sim2RealEventsCfg`: per-reset materials, mass, gains, joint friction, viscous friction and encoder bias; home
+    starts only, with ±1 cm / ±10° red and ±5 mm / ±5° blue noise; mat height.
+- **`play_mode()`:** sequential home starts. Nominal mode pins cube friction to 0.7 and red mass to 20 g.
+- **Agent:** `agents/rsl_rl_ppo_cfg.py:SO101CubeStatePPORunnerCfg` is identical to the vial teacher except for
+  `experiment_name=so101_cube_state` and `max_iterations=1500`.
+
+**Reset dataset** (`assets/cube_reset_poses.pt`, `CUBE_RESET_DATASET`)
+- Format `so101-cube-stack-reset-dataset` v1. 7 phases × 128 rows: home, approach, grasp, lift, transport, place,
+  release. Committed as a plain blob (`.gitignore`/`.gitattributes` exceptions).
+- `place_cube/reset/generator.py` (`uv run generate-so101-cube-resets`, about 20 s on GPU; viewer
+  `view-so101-cube-resets [--phase NAME]`): every row is a physically simulated, validated rollout. Seed banks chain
+  phases. Grasp rows are restored and re-verified. Flags are measured, not inferred from the phase.
+- **Hard-won constraints** (don't regress these):
+  1. **IK targets are in the environment frame.** The IK model is the env-0 robot moved to the origin.
+  2. **A straight-down grasp is unreachable** here: `wrist_flex` exceeds its ±1.62 rad limit. The gripper is pitched
+     **15°** about the lateral axis, *in the radial plane through the base*, the only tilt a 5-DoF arm can make at any
+     roll. Carries rotate the target with the pan angle so it stays in that plane.
+  3. The drives stop about 1° short (system-identified Coulomb friction acts as a deadband), so the TCP misses by about
+     6 mm. Carries use Cartesian feedback, and the proof lift is 20 mm.
+  4. Carry height is 0.095 m (red center): above that, `wrist_flex` runs out of margin.
+- Acceptance per 1024 batch: approach 99%, grasp 78%, lift 60%, transport 53%, place 86%, release 100%. Rows after
+  the lift lose the farthest red layouts (x > 0.25) to the wrist limit; home rows cover the full range.
+
+**Validated**
+- 141 tests pass.
+- Replay: every row restores once with matching flags, nothing terminates on step 1, and no restored milestone is paid.
+  Holding the recorded targets for 1 s keeps 100% of held rows held. Release rows succeed on their own; that's
+  intended, as in the vial task.
+- random_agent with both presets; PPO smoke run (512 × 30 iterations); `play` with the episode counter
+  (`success_criterion=red_on_blue_v1`).
+
+**Commands**
+- Train: `uv run isaaclab train --rl_library rsl_rl --task IsaacTutorial-Place-Cube-SO101 --num_envs 4096 --visualizer none presets=newton_mjwarp`
+- Evaluate: the vial `play` command with this task ID (prints `SO101_EVAL_RESULT` with grasp/lift/place/success,
+  red_dropped, blue_toppled and stack-force fields).
 - Inspect: `uv run isaaclab zero_agent --task IsaacTutorial-Inspect-Cube-SO101 --num_envs 1 --max_steps 600 --visualizer newton presets=newton_mjwarp`
-- Random agent: `uv run isaaclab random_agent --task IsaacTutorial-Place-Cube-SO101 --num_envs 16 --visualizer newton presets=newton_mjwarp`
 
 ## Task design facts (check these before changing anything)
 
