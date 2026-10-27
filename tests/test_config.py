@@ -46,10 +46,16 @@ def test_tasks_are_registered_with_rsl_rl_entry_points():
         "IsaacTutorial-Inspect-Cube-SO101",
         "IsaacTutorial-Inspect-SO101",
         "IsaacTutorial-Place-Cube-SO101",
+        "IsaacTutorial-Place-Cube-SO101-Camera",
         "IsaacTutorial-Place-Vial-SO101",
         "IsaacTutorial-Place-Vial-SO101-Camera",
     ]
-    cube_inspection, inspection, cube, state, camera = (gym.spec(task).kwargs for task in ids)
+    cube_inspection, inspection, cube, cube_camera, state, camera = (gym.spec(task).kwargs for task in ids)
+    assert cube_camera["env_cfg_entry_point"].endswith("place_cube.config.so101.camera_env_cfg:SO101CubeCameraEnvCfg")
+    assert cube_camera["rsl_rl_cfg_entry_point"].endswith(
+        "place_cube.config.so101.agents.rsl_rl_distillation_cfg:SO101CubeCameraDistillationRunnerCfg"
+    )
+    assert cube_camera["rsl_rl_ppo_cfg_entry_point"].endswith("agents.rsl_rl_ppo_cfg:SO101CubeCameraPPORunnerCfg")
     assert cube["env_cfg_entry_point"].endswith("place_cube.config.so101.env_cfg:SO101CubeEnvCfg")
     assert cube["rsl_rl_cfg_entry_point"].endswith("agents.rsl_rl_ppo_cfg:SO101CubeStatePPORunnerCfg")
     assert cube_inspection["env_cfg_entry_point"].endswith("inspection_env_cfg:SO101CubeInspectionEnvCfg")
@@ -366,3 +372,79 @@ def test_cube_teacher_ppo_mirrors_the_vial_teacher():
     assert cube.obs_groups == vial.obs_groups == {"actor": ["policy"], "critic": ["critic"]}
     assert cube.actor.to_dict() == vial.actor.to_dict() and cube.critic.to_dict() == vial.critic.to_dict()
     assert cube.algorithm.to_dict() == vial.algorithm.to_dict()
+
+
+def _cube_camera(*presets):
+    from isaaclab_tutorial.tasks.place_cube.config.so101.camera_env_cfg import SO101CubeCameraEnvCfg
+
+    return resolve_presets(SO101CubeCameraEnvCfg(), ["newton_mjwarp", "newton_renderer", *presets])
+
+
+@pytest.mark.parametrize("presets", [(), ("sim2real",)])
+def test_cube_camera_task_inherits_the_state_task_and_matches_the_vial_camera(presets):
+    cube_camera, cube_state, vial_camera = _cube_camera(*presets), _cube(*presets), _camera(*presets)
+    assert cube_camera.scene.num_envs == 1024
+    # Hidden only where the randomized camera mount could put the lens inside the housing mesh.
+    assert cube_camera.scene.robot.spawn.hide_camera_housing is bool(presets)
+    for name in ("wrist_camera",):
+        assert getattr(cube_camera.scene, name).to_dict() == getattr(vial_camera.scene, name).to_dict()
+    for group in ("wrist_rgb", "proprioception"):
+        cube_terms = getattr(cube_camera.observations, group).to_dict()
+        vial_terms = getattr(vial_camera.observations, group).to_dict()
+        # The cube package has its own copies of the terms, so compare everything but the function.
+        for terms in (cube_terms, vial_terms):
+            for term in terms.values():
+                if isinstance(term, dict):
+                    term.pop("func", None)
+        assert cube_terms == vial_terms, group
+    # The teacher input is exactly the trained state actor's input; rewards, terminations and resets are inherited.
+    assert cube_camera.observations.teacher_state.to_dict() == cube_state.observations.policy.to_dict()
+    assert cube_camera.observations.critic.to_dict() == cube_state.observations.critic.to_dict()
+    assert cube_camera.rewards.to_dict() == cube_state.rewards.to_dict()
+    assert cube_camera.terminations.to_dict() == cube_state.terminations.to_dict()
+    for name in vars(cube_state.events):
+        assert getattr(cube_camera.events, name).to_dict() == getattr(cube_state.events, name).to_dict()
+
+
+def test_cube_camera_sim2real_keeps_red_and_blue_apart():
+    from isaaclab_tutorial.tasks.place_cube.config.so101.camera_env_cfg import CameraSim2RealEventsCfg as CubeEvents
+
+    events = _cube_camera("sim2real").events
+    assert isinstance(events, CubeEvents) and events.camera_mount is not None
+    (red_lo, red_hi), (blue_lo, blue_hi) = (
+        events.cube_a_color.params["channels"]["color"],
+        events.cube_b_color.params["channels"]["color"],
+    )
+    robot_lo, robot_hi = events.robot_color.params["channels"]["color"]
+    # Red always dominates in red's range and blue in blue's: the ranges cannot meet.
+    assert red_lo[0] > max(red_hi[1], red_hi[2]) and blue_lo[2] > max(blue_hi[0], blue_hi[1])
+    assert red_hi[2] < blue_lo[2] and blue_hi[0] < red_lo[0]
+    # The printed robot parts never become saturated red: their green floor exceeds red's green ceiling.
+    assert robot_lo[1] > red_hi[1]
+
+
+def test_cube_camera_agents_mirror_the_teacher_and_the_vial_student():
+    from isaaclab_tutorial.tasks.place_cube.config.so101.agents.rsl_rl_distillation_cfg import (
+        SO101CubeCameraDistillationRunnerCfg,
+    )
+    from isaaclab_tutorial.tasks.place_cube.config.so101.agents.rsl_rl_ppo_cfg import (
+        SO101CubeCameraPPORunnerCfg,
+        SO101CubeStatePPORunnerCfg,
+    )
+    from isaaclab_tutorial.tasks.place_vial.config.so101.agents.rsl_rl_ppo_cfg import SO101CameraPPORunnerCfg
+
+    distillation, teacher = SO101CubeCameraDistillationRunnerCfg(), SO101CubeStatePPORunnerCfg()
+    vial = SO101CameraDistillationRunnerCfg()
+    # The checkpoint-loading contract: the distillation teacher is exactly the trained state actor.
+    assert distillation.teacher.to_dict() == teacher.actor.to_dict()
+    assert distillation.student.to_dict() == vial.student.to_dict()
+    assert distillation.algorithm.class_name.startswith("isaaclab_tutorial.tasks.place_cube.")
+    assert distillation.algorithm.class_name.endswith(":BoundedTeacherDistillation")
+    assert distillation.experiment_name == "so101_cube_camera_distillation"
+    assert (distillation.max_iterations, distillation.num_steps_per_env) == (1600, 32)
+    camera = _cube_camera()
+    for groups in distillation.obs_groups.values():
+        assert all(hasattr(camera.observations, group) for group in groups)
+    ppo, vial_ppo = SO101CubeCameraPPORunnerCfg(), SO101CameraPPORunnerCfg()
+    assert ppo.experiment_name == "so101_cube_camera" and ppo.obs_groups == vial_ppo.obs_groups
+    assert ppo.actor.to_dict() == vial_ppo.actor.to_dict()

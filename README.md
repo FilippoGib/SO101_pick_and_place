@@ -106,6 +106,18 @@ uv run isaaclab play --rl_library rsl_rl --task IsaacTutorial-Place-Vial-SO101 -
 To evaluate a camera policy, use the `-Camera` task with `presets=newton_mjwarp,newton_renderer`, and add
 `--agent rsl_rl_ppo_cfg_entry_point` for one trained from scratch.
 
+To see what a camera policy sees, record a tiled video of each environment's wrist image next to the scene video. It
+needs `--video` and a capture-capable visualizer such as `--visualizer newton`:
+
+```bash
+uv run isaaclab play --rl_library rsl_rl --task IsaacTutorial-Place-Cube-SO101-Camera --num_envs 16 --checkpoint /abs/path/to/model.pt --video --video_length 300 --visualizer newton --external_callback isaaclab_tutorial.utils.camera_video.install_camera_video presets=newton_mjwarp,newton_renderer
+```
+
+This writes `wrist_<checkpoint>_<index>.mp4` beside the scene clips in `videos/play`, frame for frame with them. Tile
+*k* is environment *k*'s student input (the 64 x 48 `wrist_rgb` image). Its border turns green on success, yellow on a
+time-out and red on any other termination, for one second. `SO101_CAMERA_VIDEO_ENVS` sets how many environments are
+shown (default 16). Use `camera_video.install_camera_video_and_episode_counter` to record and count episodes together.
+
 Do not pass `--deterministic`. On this pin it also enables Warp-wide deterministic physics, which overflows a
 collision-kernel buffer in this scene. Playback already uses deterministic policy actions.
 

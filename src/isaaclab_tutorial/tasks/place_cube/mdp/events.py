@@ -1,4 +1,4 @@
-"""Event terms: dataset resets, and the joint and encoder randomization Isaac Lab does not provide."""
+"""Event terms: dataset resets, and the joint, encoder and camera randomization Isaac Lab does not provide."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
-from isaaclab.utils.math import quat_mul
+from isaaclab.utils.math import combine_frame_transforms, quat_from_euler_xyz, quat_mul, subtract_frame_transforms
 
 from isaaclab_tutorial.tasks.place_cube.reset.dataset import load_reset_dataset
 
@@ -168,3 +168,43 @@ def randomize_encoder_bias(env: ManagerBasedRLEnv, env_ids: torch.Tensor | None,
     if not hasattr(env, "_so101_encoder_bias"):
         env._so101_encoder_bias = torch.zeros(env.num_envs, 6, device=env.device)
     env._so101_encoder_bias[ids] = torch.empty(len(ids), 6, device=env.device).uniform_(-bound, bound)
+
+
+class randomize_wrist_camera_mount(ManagerTermBase):
+    """Offset the wrist camera from its nominal mount by a per-episode translation [m] and rotation [rad]."""
+
+    def __init__(self, cfg: EventTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.nominal_position = self.nominal_orientation = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: torch.Tensor | None,
+        sensor_cfg: SceneEntityCfg,
+        asset_cfg: SceneEntityCfg,
+        position_range: float,
+        rotation_range: float,
+    ) -> None:
+        ids = _ids(env, env_ids)
+        camera = env.scene.sensors[sensor_cfg.name]
+        robot = env.scene[asset_cfg.name]
+        # Dataset resets just wrote joint positions; refresh kinematics before reading the carrier link.
+        env.sim.forward()
+        carrier_position = robot.data.body_pos_w.torch[:, asset_cfg.body_ids[0]]
+        carrier_orientation = robot.data.body_quat_w.torch[:, asset_cfg.body_ids[0]]
+        if self.nominal_position is None:
+            self.nominal_position, self.nominal_orientation = subtract_frame_transforms(
+                carrier_position, carrier_orientation, camera.data.pos_w.torch, camera.data.quat_w_ros.torch
+            )
+        translation = torch.empty(len(ids), 3, device=env.device).uniform_(-position_range, position_range)
+        rotation = quat_from_euler_xyz(*torch.empty_like(translation).uniform_(-rotation_range, rotation_range).T)
+        local_position, local_orientation = combine_frame_transforms(
+            self.nominal_position[ids], self.nominal_orientation[ids], translation, rotation
+        )
+        position, orientation = combine_frame_transforms(
+            carrier_position[ids], carrier_orientation[ids], local_position, local_orientation
+        )
+        camera.set_world_poses(position, orientation, env_ids=ids, convention="ros")
+        # Reading camera.data above may have rendered the old pose; invalidate it for the new episode.
+        camera.reset(env_ids=ids)

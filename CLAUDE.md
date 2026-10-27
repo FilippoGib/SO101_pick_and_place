@@ -23,7 +23,9 @@ Keep the markers and those comments.
   and a planning doc `agent.md`. Its history:
   "cube in cup — training instability, maybe geometry too complex?" → "cube on cylinder checkpoint" → "model not learning".
   To see it: `git show dev/cube_abandoned:agent.md` and `git diff main dev/cube_abandoned`.
-- `dev/cube_active` now has `tasks/place_cube/`: red-on-blue stacking, ready for teacher training. See "place_cube" below.
+- `dev/cube_active` now has `tasks/place_cube/`: red-on-blue stacking. The state teacher is trained
+  (`logs/rsl_rl/so101_cube_state/2026-10-27_13-42-19/model_1499.pt`), and the wrist-camera student is ready to
+  distill. See "place_cube" below.
 - The branch name suggests a fresh cube-manipulation attempt will happen here. Learn from the abandoned branch: keep the
   first target geometry simple, and validate the reset dataset and rewards before scaling up training.
 
@@ -84,6 +86,8 @@ src/isaaclab_tutorial/
   tasks/place_cube/                  red-on-blue stacking teacher: mdp/, reset/, agents/ (see below)
   assets/reset_poses.pt              tracked through LFS; the only .pt file that is not gitignored
   utils/evaluation.py                exact episode counter for play (env SO101_EVALUATION_EPISODES / _OUTPUT)
+  utils/camera_video.py              play callback: tiled mp4 of every env's student wrist_rgb input next to the
+                                     scene clip (needs --video + --visualizer newton; SO101_CAMERA_VIDEO_ENVS)
   utils/export_leapp.py              exports the camera actor as a LEAPP bundle
   utils/deploy.py, calibrate.py, home_so101.py, inspect_so101.py
                                      real-robot scripts with inline uv script metadata (CPU torch, LeRobot 0.6.1);
@@ -105,8 +109,9 @@ Untracked, gitignored local outputs: `logs/rsl_rl/{so101_vial_state,so101_vial_c
 | `IsaacTutorial-Inspect-SO101` | `SO101InspectionEnvCfg` | none (no actions) |
 | `IsaacTutorial-Inspect-Cube-SO101` | `place_cube…SO101CubeInspectionEnvCfg` | none (no actions) |
 | `IsaacTutorial-Place-Cube-SO101` | `place_cube…SO101CubeEnvCfg` | `SO101CubeStatePPORunnerCfg` (exp `so101_cube_state`) |
+| `IsaacTutorial-Place-Cube-SO101-Camera` | `place_cube…SO101CubeCameraEnvCfg` | default `SO101CubeCameraDistillationRunnerCfg` (exp `so101_cube_camera_distillation`); `--agent rsl_rl_ppo_cfg_entry_point` → `SO101CubeCameraPPORunnerCfg` (exp `so101_cube_camera`) |
 
-## place_cube: red-on-blue stacking state teacher (ready to train)
+## place_cube: red-on-blue stacking (teacher trained; camera student ready to distill)
 
 **Task:** pick up the red cube (`cube_a`) and place it on the blue cube (`cube_b`).
 - Success, held for **10 consecutive steps**:
@@ -152,6 +157,40 @@ Untracked, gitignored local outputs: `logs/rsl_rl/{so101_vial_state,so101_vial_c
 - **Agent:** `agents/rsl_rl_ppo_cfg.py:SO101CubeStatePPORunnerCfg` is identical to the vial teacher except for
   `experiment_name=so101_cube_state` and `max_iterations=1500`.
 
+**Camera student** (`config/so101/camera_env_cfg.py`, lesson-06 markers)
+- Mirrors the vial lesson 6. `SO101CubeCameraEnvCfg(SO101CubeEnvCfg)` inherits rewards, terminations, the reset
+  dataset and evaluation.
+  - The same wrist camera: 80×60 render resampled to 64×48, 2-frame history.
+  - The same `WristImageCfg` and `ProprioceptionCfg` (24 values).
+  - `teacher_state` = the state `policy` group (74 values), exactly the trained actor's input.
+  - `wrist_rgb`/`camera_sampling_grid` and `randomize_wrist_camera_mount` are copied into `place_cube/mdp`.
+- **`hide_camera_housing = preset(default=False, sim2real=True)`** (the vial task always uses False). Newton ray
+  tracing ignores the near clip, so with the sim2real mount offset (±3 mm/±3°) about 30% of envs rendered a blank image
+  (the housing interior) for the whole episode. **The vial camera task still has this bug.** At the nominal mount the
+  housing is outside the camera's view, so nominal images are identical either way. It is kept visible there so
+  videos show the camera; it is invisible in sim2real videos.
+- Sim2real colors keep the task identifiable:
+  - red cube R 0.60–1.0 with G and B ≤ 0.12
+  - blue cube B 0.55–1.0 with R ≤ 0.12 and G 0.12–0.40
+  - robot parts with a green floor of 0.30, so they never turn cube-red
+  - the vial ranges allowed orange-looking "red" and red/purple jaws
+- Agents:
+  - `agents/rsl_rl_distillation_cfg.py` (`BoundedTeacherDistillation`; the teacher MLP mirrors
+    `SO101CubeStatePPORunnerCfg.actor`).
+  - `SO101CubeCameraPPORunnerCfg` in `agents/rsl_rl_ppo_cfg.py`.
+- Validated:
+  - contact sheets of the student's 64×48 view for every phase, nominal and sim2real: both cubes visible at home,
+    red in the jaws while carrying, red on blue at place/release
+  - distillation smoke with the real teacher: 256 envs × 20 iterations, behavior loss 0.30 → 0.078; the 20-iteration
+    student already succeeds 21/64 from home
+  - camera PPO smoke
+  - `play` with the episode counter
+- Distill:
+  `uv run isaaclab train --rl_library rsl_rl --task IsaacTutorial-Place-Cube-SO101-Camera --num_envs 1024 --checkpoint /abs/path/logs/rsl_rl/so101_cube_state/2026-10-27_13-42-19/model_1499.pt --visualizer none presets=newton_mjwarp,newton_renderer`
+- The teacher was trained without sim2real, so this is a nominal student. A sim2real student needs a sim2real
+  fine-tune of the teacher first, as in `docs/SIM2REAL.md`. LEAPP export and `deploy.py` are untested for the cube
+  task. Their image and proprioception interface is the same as the vial student's.
+
 **Reset dataset** (`assets/cube_reset_poses.pt`, `CUBE_RESET_DATASET`)
 - Format `so101-cube-stack-reset-dataset` v1. 7 phases × 128 rows: home, approach, grasp, lift, transport, place,
   release. Committed as a plain blob (`.gitignore`/`.gitattributes` exceptions).
@@ -170,7 +209,7 @@ Untracked, gitignored local outputs: `logs/rsl_rl/{so101_vial_state,so101_vial_c
   the lift lose the farthest red layouts (x > 0.25) to the wrist limit; home rows cover the full range.
 
 **Validated**
-- 141 tests pass.
+- 145 tests pass.
 - Replay: every row restores once with matching flags, nothing terminates on step 1, and no restored milestone is paid.
   Holding the recorded targets for 1 s keeps 100% of held rows held. Release rows succeed on their own; that's
   intended, as in the vial task.
