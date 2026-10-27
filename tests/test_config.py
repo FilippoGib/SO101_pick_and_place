@@ -43,11 +43,17 @@ def _camera(*presets):
 def test_tasks_are_registered_with_rsl_rl_entry_points():
     ids = sorted(task for task in gym.registry if task.startswith("IsaacTutorial-"))
     assert ids == [
+        "IsaacTutorial-Inspect-Cube-SO101",
         "IsaacTutorial-Inspect-SO101",
+        "IsaacTutorial-Place-Cube-SO101",
         "IsaacTutorial-Place-Vial-SO101",
         "IsaacTutorial-Place-Vial-SO101-Camera",
     ]
-    inspection, state, camera = (gym.spec(task).kwargs for task in ids)
+    cube_inspection, inspection, cube, state, camera = (gym.spec(task).kwargs for task in ids)
+    assert cube["env_cfg_entry_point"].endswith("place_cube.config.so101.env_cfg:SO101CubeEnvCfg")
+    assert "rsl_rl_cfg_entry_point" not in cube
+    assert cube_inspection["env_cfg_entry_point"].endswith("inspection_env_cfg:SO101CubeInspectionEnvCfg")
+    assert "rsl_rl_cfg_entry_point" not in cube_inspection
     assert inspection["env_cfg_entry_point"].endswith("inspection_env_cfg:SO101InspectionEnvCfg")
     assert "rsl_rl_cfg_entry_point" not in inspection
     assert state["env_cfg_entry_point"].endswith("env_cfg:SO101VialEnvCfg")
@@ -213,3 +219,76 @@ def test_distillation_labels_are_clamped_to_the_executed_action():
     actions = algorithm.act(torch.zeros(3, 1))
     assert torch.equal(actions, torch.full((3, 2), 0.25))
     assert torch.equal(algorithm.transition.privileged_actions, torch.tensor([[1.0, -1.0]]).expand(3, -1))
+
+
+def _cube_inspection(*presets):
+    from isaaclab_tutorial.tasks.place_cube.config.so101.inspection_env_cfg import SO101CubeInspectionEnvCfg
+
+    return resolve_presets(SO101CubeInspectionEnvCfg(), ["newton_mjwarp", *presets])
+
+
+def test_cube_scene_replaces_the_vial_and_rack_with_two_resting_cubes():
+    from isaaclab_tutorial.assets import CUBE_USD
+    from isaaclab_tutorial.tasks.place_cube.config.so101.env_cfg import CUBE_SIZE, TABLETOP_Z
+
+    cfg = _cube_inspection()
+    scene = cfg.scene
+    assert not hasattr(scene, "vial") and not hasattr(scene, "rack")
+    assert scene.cube_a.init_state.pos[:2] == pytest.approx((0.231, -0.017))  # the vial's tabletop position
+    assert scene.cube_b.init_state.pos[:2] == pytest.approx((0.2101682871, 0.1101424648))  # rack footprint center
+    for cube, color in ((scene.cube_a, "red"), (scene.cube_b, "blue")):
+        assert cube.spawn.usd_path == str(CUBE_USD)
+        assert cube.spawn.variants == {"Color": color}
+        assert cube.init_state.pos[2] - CUBE_SIZE / 2 == pytest.approx(TABLETOP_Z, abs=0.001)
+    assert scene.moving_jaw_contact.filter_prim_paths_expr == ["{ENV_REGEX_NS}/CubeA", "{ENV_REGEX_NS}/CubeB"]
+    assert scene.support is None and scene.fixed_jaw_support is None
+    assert scene.robot.init_state.pos == (-0.05, 0.0, 0.0)
+    assert cfg.rewards is None and cfg.terminations is None
+
+
+def test_cube_scene_sim2real_mirrors_the_vial_scene():
+    scene = _cube_inspection("sim2real").scene
+    vial_scene = _state("sim2real").scene
+    assert scene.robot.init_state.pos == vial_scene.robot.init_state.pos == (-0.05, 0.0, BASE_HEIGHT_CORRECTION)
+    assert scene.robot.spawn.shoulder_response == vial_scene.robot.spawn.shoulder_response
+    assert scene.robot.spawn.elbow_response == vial_scene.robot.spawn.elbow_response
+    assert scene.support.spawn.size == vial_scene.support.spawn.size
+    assert scene.support.init_state.pos == vial_scene.support.init_state.pos
+    assert scene.fixed_jaw_support.prim_path == vial_scene.fixed_jaw_support.prim_path
+    assert scene.moving_jaw_support.prim_path == vial_scene.moving_jaw_support.prim_path
+
+
+def _cube(*presets):
+    from isaaclab_tutorial.tasks.place_cube.config.so101.env_cfg import SO101CubeEnvCfg
+
+    return resolve_presets(SO101CubeEnvCfg(), ["newton_mjwarp", *presets])
+
+
+@pytest.mark.parametrize("presets", [(), ("sim2real",)])
+def test_cube_task_reuses_the_vial_actions_and_timing(presets):
+    cfg, vial = _cube(*presets), _state(*presets)
+    for name in ("arm_action", "gripper_action"):
+        cube_term, vial_term = getattr(cfg.actions, name), getattr(vial.actions, name)
+        assert cube_term.joint_names == vial_term.joint_names
+        assert cube_term.scale == vial_term.scale
+        assert cube_term.use_zero_offset and type(cube_term) is type(vial_term)
+    assert (cfg.decimation, cfg.sim.dt, cfg.episode_length_s) == (vial.decimation, vial.sim.dt, vial.episode_length_s)
+    assert cfg.episode_length_s == (30.0 if presets else 20.0)
+    assert (cfg.scene.support is None) == (not presets)
+
+
+def test_cube_task_observes_joints_and_both_cubes_and_terminates_on_lost_cubes():
+    cfg = _cube()
+    policy = cfg.observations.policy
+    for name in ("cube_a", "cube_b"):
+        term = getattr(policy, name)
+        assert term.params["body_asset_cfg"].name == name
+        assert term.params["base_asset_cfg"].name == "robot"
+        bounds = getattr(cfg.terminations, f"{name}_out_of_bounds").params
+        assert bounds["asset_cfg"].name == name
+        assert bounds["in_bound_range"]["z"][0] < 0.035 - 0.015  # below the desk top
+    assert {"joint_pos", "joint_vel", "previous_action"} <= set(vars(policy))
+    assert not hasattr(cfg.observations, "critic")
+    assert cfg.terminations.time_out.time_out and cfg.terminations.unstable_robot is not None
+    assert cfg.rewards is None
+    assert cfg.events.reset_scene.params == {"reset_joint_targets": True}

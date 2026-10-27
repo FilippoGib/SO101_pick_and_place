@@ -2,6 +2,7 @@ import re
 
 from isaaclab_tutorial.assets import (
     ASSET_ROOT,
+    CUBE_USD,
     RACK_USD,
     VIAL_USD,
     validate_assets,
@@ -87,3 +88,26 @@ def test_success_hole_centers_match_the_physical_rack_openings():
     ys = ((front[1] + center_y[0]) / 2, (center_y[1] + back[0]) / 2)
     actual = torch.tensor([(xs[0], ys[0], 0), (xs[1], ys[0], 0), (xs[1], ys[1], 0), (xs[0], ys[1], 0)])
     torch.testing.assert_close(torch.tensor(RACK_HOLE_CENTERS), actual, atol=0.0005, rtol=0)
+
+
+def test_cube_is_a_30mm_rigid_body_with_red_and_blue_variants():
+    import pytest
+    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+    stage = Usd.Stage.Open(str(CUBE_USD))
+    cube = stage.GetPrimAtPath("/Cube")
+    assert cube.HasAPI(UsdPhysics.RigidBodyAPI)
+    assert UsdPhysics.MassAPI(cube).GetMassAttr().Get() == pytest.approx(0.02)
+    colliders = [prim for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.CollisionAPI)]
+    assert [str(prim.GetPath()) for prim in colliders] == ["/Cube/collision"]
+    bounds = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "guide"], False, True)
+    for path in ("/Cube/collision", "/Cube/geometry"):
+        box = bounds.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange()
+        assert tuple(box.GetSize()) == pytest.approx((0.03, 0.03, 0.03))
+        assert tuple(box.GetMidpoint()) == pytest.approx((0.0, 0.0, 0.0))
+    colors = {}
+    for variant in ("red", "blue"):
+        cube.GetVariantSet("Color").SetVariantSelection(variant)
+        shader = UsdShade.Shader(stage.GetPrimAtPath("/Cube/Looks/Plastic/Shader"))
+        colors[variant] = shader.GetInput("diffuseColor").Get()
+    assert colors["red"] != colors["blue"]
